@@ -186,7 +186,7 @@ void error(const struct location *loc, const char *fmt, ...)
 {
 	va_list ap;
 
-	fprintf(stderr, "%s:%zu:%zu: error: ", loc->file, loc->line, loc->col);
+	fprintf(stderr, "%s:%u:%u: error: ", loc->file, loc->line, loc->col);
 	va_start(ap, fmt);
 	vfprintf(stderr, fmt, ap);
 	va_end(ap);
