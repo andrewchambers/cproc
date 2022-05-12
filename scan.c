@@ -423,8 +423,7 @@ scanfrom(const char *name, FILE *file)
 	s->loc.line = 1;
 	s->loc.col = 0;
 	s->next = scanner;
-	if (file)
-		nextchar(s);
+	nextchar(s);
 	scanner = s;
 }
 
