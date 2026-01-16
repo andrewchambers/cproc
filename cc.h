@@ -385,8 +385,13 @@ struct expr {
 		struct {
 			struct type *type;
 		} szof;
-		struct value *temp;
+	struct value *temp;
 	} u;
+};
+
+struct asmoperand {
+	char *constraint;
+	struct expr *expr;
 };
 
 struct init {
@@ -563,6 +568,10 @@ struct type *functype(struct func *);
 void funclabel(struct func *, struct block *);
 struct value *funcexpr(struct func *, struct expr *);
 void funcjmp(struct func *, struct block *);
+void funcasm(struct func *, char *templ, bool isvolatile,
+	struct asmoperand *outs, size_t nout,
+	struct asmoperand *ins, size_t nin,
+	char **clob, size_t nclob);
 void funcjnz(struct func *, struct value *, struct type *, struct block *, struct block *);
 void funcret(struct func *, struct value *);
 void funchlt(struct func *);

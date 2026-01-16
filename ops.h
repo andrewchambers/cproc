@@ -98,6 +98,7 @@ OP(ICOPY,    "copy")
 
 /* call */
 OP(ICALL,    "call")
+OP(IASM,     "asm")
 
 /* variadic */
 OP(IVASTART, "vastart")

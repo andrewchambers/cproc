@@ -6,6 +6,55 @@
 #include "util.h"
 #include "cc.h"
 
+static char *
+asmstringlit(const char *what)
+{
+	struct stringlit str = {0};
+	struct type *t;
+
+	if (tok.kind != TSTRINGLIT)
+		error(&tok.loc, "%s must be a string literal", what);
+	t = stringconcat(&str, false);
+	if (t->size != 1)
+		error(&tok.loc, "%s must be a narrow string literal", what);
+	if (!str.data)
+		error(&tok.loc, "%s must be non-empty", what);
+	return (char *)str.data;
+}
+
+static void
+asmoperandlist(struct array *out, struct scope *s)
+{
+	struct asmoperand *op;
+
+	if (tok.kind == TCOLON || tok.kind == TRPAREN)
+		return;
+	for (;;) {
+		op = arrayadd(out, sizeof(*op));
+		op->constraint = asmstringlit("asm constraint");
+		expect(TLPAREN, "after asm constraint");
+		op->expr = expr(s);
+		expect(TRPAREN, "after asm operand");
+		if (!consume(TCOMMA))
+			break;
+	}
+}
+
+static void
+asmclobberlist(struct array *out)
+{
+	char **clob;
+
+	if (tok.kind == TRPAREN)
+		return;
+	for (;;) {
+		clob = arrayadd(out, sizeof(*clob));
+		*clob = asmstringlit("asm clobber");
+		if (!consume(TCOMMA))
+			break;
+	}
+}
+
 /* 6.8.1 Labeled statements */
 static bool
 label(struct func *f, struct scope *s)
@@ -308,6 +357,31 @@ stmt(struct func *f, struct scope *s)
 		break;
 
 	case T__ASM__:
-		error(&tok.loc, "inline assembly is not yet supported");
+	{
+		struct array outs = {0}, ins = {0}, clob = {0};
+		char *templ;
+		bool isvolatile = false;
+
+		next();
+		while (consume(TVOLATILE))
+			isvolatile = true;
+		expect(TLPAREN, "after '__asm__'");
+		templ = asmstringlit("asm template");
+		if (consume(TCOLON)) {
+			asmoperandlist(&outs, s);
+			if (consume(TCOLON)) {
+				asmoperandlist(&ins, s);
+				if (consume(TCOLON))
+					asmclobberlist(&clob);
+			}
+		}
+		expect(TRPAREN, "after asm statement");
+		expect(TSEMICOLON, "after asm statement");
+		funcasm(f, templ, isvolatile,
+			outs.val, outs.len / sizeof(struct asmoperand),
+			ins.val, ins.len / sizeof(struct asmoperand),
+			clob.val, clob.len / sizeof(char *));
+		break;
+	}
 	}
 }

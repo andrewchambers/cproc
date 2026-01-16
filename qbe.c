@@ -54,6 +54,22 @@ struct inst {
 	enum instkind kind;
 	int class;
 	struct value res, *arg[2];
+	unsigned aux;
+};
+
+struct asmop {
+	char *constraint;
+	struct value *val;
+	int class;
+};
+
+struct asminfo {
+	char *templ;
+	bool isvolatile;
+	struct asmop *op;
+	size_t nout, nin;
+	char **clob;
+	size_t nclob;
 };
 
 struct jump {
@@ -95,6 +111,7 @@ struct func {
 	struct block *start, *end;
 	struct map gotos;
 	unsigned lastid;
+	struct array asms;
 };
 
 static const int ptrclass = 'l';
@@ -217,6 +234,16 @@ functemp(struct func *f, struct value *v)
 	v->id = ++f->lastid;
 }
 
+static struct value *
+mktemp(struct func *f)
+{
+	struct value *v;
+
+	v = xmalloc(sizeof(*v));
+	functemp(f, v);
+	return v;
+}
+
 static const char *const instname[] = {
 #define OP(op, name) [op] = name,
 #include "ops.h"
@@ -233,6 +260,7 @@ mkinst(struct func *f, int op, int class, struct value *arg0, struct value *arg1
 	inst->class = class;
 	inst->arg[0] = arg0;
 	inst->arg[1] = arg1;
+	inst->aux = 0;
 	if (class && op != IARG)
 		functemp(f, &inst->res);
 	else
@@ -513,6 +541,7 @@ mkfunc(struct decl *decl, char *name, struct type *t, struct scope *s)
 	f->start = f->end = mkblock("start");
 	f->lastid = 0;
 	mapinit(&f->gotos, 8);
+	f->asms = (struct array){0};
 	emittype(t->base);
 
 	/* allocate space for parameters */
@@ -547,6 +576,7 @@ delfunc(struct func *f)
 {
 	struct block *b;
 	struct inst **inst;
+	struct asminfo *as;
 
 	while (b = f->start) {
 		f->start = b->next;
@@ -555,6 +585,11 @@ delfunc(struct func *f)
 		free(b->insts.val);
 		free(b);
 	}
+	arrayforeach(&f->asms, as) {
+		free(as->op);
+		free(as->clob);
+	}
+	free(f->asms.val);
 	mapfree(&f->gotos, free);
 	free(f);
 }
@@ -959,6 +994,210 @@ funcexpr(struct func *f, struct expr *e)
 	return NULL;
 }
 
+static bool
+asmhas(const char *cstr, char c)
+{
+	return cstr && strchr(cstr, c) != NULL;
+}
+
+static int
+asmtie(const char *cstr)
+{
+	const unsigned char *p;
+	int n;
+
+	if (!cstr)
+		return -1;
+	for (p = (const unsigned char *)cstr; *p; ++p) {
+		if (isdigit(*p)) {
+			n = 0;
+			while (isdigit(*p)) {
+				n = n * 10 + (*p - '0');
+				++p;
+			}
+			return n;
+		}
+	}
+	return -1;
+}
+
+static int
+asmclass(struct type *t, const char *cstr, bool mem)
+{
+	if (mem)
+		return 'l';
+	if (asmhas(cstr, 'x')) {
+		if (!(t->prop & PROPFLOAT))
+			error(&tok.loc, "sse asm constraint requires float or double");
+		return qbetype(t).base;
+	}
+	return qbetype(t).base;
+}
+
+static char *
+asmrwconstraint(const char *cstr)
+{
+	size_t n, i;
+	char *out;
+	bool replaced = false;
+
+	if (!cstr || strchr(cstr, '+'))
+		return (char *)cstr;
+	n = strlen(cstr);
+	out = xmalloc(n + 2);
+	for (i = 0; i < n; ++i) {
+		if (!replaced && cstr[i] == '=') {
+			out[i] = '+';
+			replaced = true;
+		} else {
+			out[i] = cstr[i];
+		}
+	}
+	if (!replaced) {
+		memmove(out + 1, out, n);
+		out[0] = '+';
+		out[n + 1] = 0;
+	} else {
+		out[n] = 0;
+	}
+	return out;
+}
+
+static struct value *
+asmregvalue(struct func *f, struct value *v, int class)
+{
+	if (v->kind == VALUE_TEMP)
+		return v;
+	return funcinst(f, ICOPY, class, v, NULL);
+}
+
+void
+funcasm(struct func *f, char *templ, bool isvolatile,
+	struct asmoperand *outs, size_t nout,
+	struct asmoperand *ins, size_t nin,
+	char **clob, size_t nclob)
+{
+	struct asminfo *as;
+	struct asmop *op;
+	struct inst *inst;
+	struct lvalue lval;
+	struct value *val;
+	size_t i, nops, asidx;
+	int tie;
+
+	struct asmout {
+		char *constraint;
+		struct expr *expr;
+		struct type *type;
+		enum typequal qual;
+		struct lvalue lval;
+		struct expr *tieexpr;
+		struct value *tieval;
+		struct value *val;
+		int class;
+		bool mem;
+		bool rw;
+		bool rw_lval;
+		bool tied;
+	} *out;
+
+	out = xreallocarray(NULL, nout, sizeof(*out));
+	for (i = 0; i < nout; ++i) {
+		out[i].constraint = outs[i].constraint;
+		out[i].expr = outs[i].expr;
+		out[i].type = outs[i].expr->type;
+		out[i].qual = outs[i].expr->qual;
+		out[i].mem = asmhas(outs[i].constraint, 'm');
+		out[i].rw = asmhas(outs[i].constraint, '+');
+		out[i].rw_lval = out[i].rw;
+		out[i].tied = false;
+		out[i].tieexpr = NULL;
+		out[i].tieval = NULL;
+		out[i].lval = funclval(f, outs[i].expr);
+	}
+	for (i = 0; i < nin; ++i) {
+		tie = asmtie(ins[i].constraint);
+		if (tie >= 0) {
+			if ((size_t)tie >= nout)
+				error(&tok.loc, "asm input ties to invalid output");
+			out[tie].rw = true;
+			out[tie].tied = true;
+			out[tie].tieexpr = ins[i].expr;
+		}
+	}
+	for (i = 0; i < nout; ++i) {
+		if (out[i].mem) {
+			out[i].val = out[i].lval.addr;
+			out[i].class = asmclass(out[i].type, out[i].constraint, true);
+		} else if (out[i].rw) {
+			out[i].class = asmclass(out[i].type, out[i].constraint, false);
+			if (out[i].tied && !out[i].rw_lval) {
+				val = funcexpr(f, out[i].tieexpr);
+				out[i].tieval = asmregvalue(f, val, out[i].class);
+				out[i].val = out[i].tieval;
+			} else {
+				out[i].val = funcload(f, out[i].type, out[i].lval);
+			}
+			out[i].class = asmclass(out[i].type, out[i].constraint, false);
+			out[i].constraint = asmrwconstraint(out[i].constraint);
+		} else {
+			out[i].val = mktemp(f);
+			out[i].class = asmclass(out[i].type, out[i].constraint, false);
+		}
+	}
+
+	nops = nout + nin;
+	asidx = f->asms.len / sizeof(struct asminfo);
+	as = arrayadd(&f->asms, sizeof(*as));
+	as->templ = templ;
+	as->isvolatile = isvolatile;
+	as->nout = nout;
+	as->nin = nin;
+	as->nclob = nclob;
+	as->op = xreallocarray(NULL, nops, sizeof(as->op[0]));
+	as->clob = xreallocarray(NULL, nclob, sizeof(as->clob[0]));
+	for (i = 0; i < nout; ++i) {
+		op = &as->op[i];
+		op->constraint = out[i].constraint;
+		op->val = out[i].val;
+		op->class = out[i].class;
+	}
+	for (i = 0; i < nin; ++i) {
+		op = &as->op[nout + i];
+		op->constraint = ins[i].constraint;
+		tie = asmtie(ins[i].constraint);
+		if (tie >= 0) {
+			if (!out[tie].tieval)
+				funcexpr(f, ins[i].expr);
+			op->val = out[tie].val;
+			op->class = out[tie].class;
+			continue;
+		}
+		if (asmhas(ins[i].constraint, 'm')) {
+			lval = funclval(f, ins[i].expr);
+			op->val = lval.addr;
+			op->class = asmclass(ins[i].expr->type, ins[i].constraint, true);
+		} else {
+			val = funcexpr(f, ins[i].expr);
+			op->class = asmclass(ins[i].expr->type, ins[i].constraint, false);
+			op->val = asmregvalue(f, val, op->class);
+		}
+	}
+	for (i = 0; i < nclob; ++i)
+		as->clob[i] = clob[i];
+
+	inst = mkinst(f, IASM, 0, NULL, NULL);
+	inst->aux = asidx;
+	arrayaddptr(&f->end->insts, inst);
+
+	for (i = 0; i < nout; ++i) {
+		if (out[i].mem)
+			continue;
+		funcstore(f, out[i].type, out[i].qual, out[i].lval, out[i].val);
+	}
+	free(out);
+}
+
 static void
 zero(struct func *func, struct value *addr, int align, unsigned long long offset, unsigned long long end)
 {
@@ -1122,6 +1361,38 @@ emitclass(int class, struct value *v)
 		fatal("type has no QBE representation");
 }
 
+static void
+emitqbestr(const char *s)
+{
+	unsigned char c;
+
+	putchar('"');
+	for (; s && *s; ++s) {
+		c = (unsigned char)*s;
+		switch (c) {
+		case '\\':
+			fputs("\\\\", stdout);
+			break;
+		case '"':
+			fputs("\\\"", stdout);
+			break;
+		case '\n':
+			fputs("\\n", stdout);
+			break;
+		case '\t':
+			fputs("\\t", stdout);
+			break;
+		default:
+			if (c < 32 || c >= 127)
+				printf("\\%03o", c);
+			else
+				putchar(c);
+			break;
+		}
+	}
+	putchar('"');
+}
+
 /* XXX: need to consider _Alignas on struct members */
 static void
 emittype(struct type *t)
@@ -1181,10 +1452,41 @@ emittype(struct type *t)
 }
 
 static struct inst **
-emitinst(struct inst **instp, struct inst **instend)
+emitinst(struct func *f, struct inst **instp, struct inst **instend)
 {
 	int op, first;
+	size_t i, nops;
 	struct inst *inst = *instp;
+	struct asminfo *as;
+	struct asmop *opv;
+
+	if (inst->kind == IASM) {
+		as = &((struct asminfo *)f->asms.val)[inst->aux];
+		nops = as->nout + as->nin;
+		putchar('\t');
+		fputs("asm ", stdout);
+		emitqbestr(as->templ);
+		printf(", %zu, %zu, %zu (", as->nout, as->nin, as->nclob);
+		for (i = 0; i < nops; ++i) {
+			if (i)
+				fputs(", ", stdout);
+			opv = &as->op[i];
+			emitqbestr(opv->constraint);
+			putchar(' ');
+			emitclass(opv->class, opv->val);
+			putchar(' ');
+			emitvalue(opv->val);
+		}
+		fputs(") (", stdout);
+		for (i = 0; i < as->nclob; ++i) {
+			if (i)
+				fputs(", ", stdout);
+			emitqbestr(as->clob[i]);
+		}
+		fputs(")\n", stdout);
+		++instp;
+		return instp;
+	}
 
 	putchar('\t');
 	assert(inst->kind < LEN(instname));
@@ -1321,7 +1623,7 @@ emitfunc(struct func *f, bool global)
 		}
 		instend = (struct inst **)((char *)b->insts.val + b->insts.len);
 		for (inst = b->insts.val; inst != instend;)
-			inst = emitinst(inst, instend);
+			inst = emitinst(f, inst, instend);
 		emitjump(&b->jump);
 	}
 	puts("}");
