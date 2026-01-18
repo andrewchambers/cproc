@@ -5,6 +5,13 @@ fail() {
 	exit 1
 }
 
+is_abs_file() {
+	case "$1" in
+	/*) [ -e "$1" ] ;;
+	*) return 1 ;;
+	esac
+}
+
 prefix=/usr/local
 bindir='$(PREFIX)/bin'
 host=
@@ -30,7 +37,19 @@ for arg ; do
 	esac
 done
 
+ldso_user_set=
+if [ "${DEFAULT_DYNAMIC_LINKER+set}" ] ; then
+	ldso_user_set=1
+fi
+
 : ${CC:=cc}
+
+is_nixos=0
+if [ -r /etc/os-release ] && grep -q '^ID=nixos$' /etc/os-release ; then
+	is_nixos=1
+elif [ -e /run/current-system/sw ] ; then
+	is_nixos=1
+fi
 
 printf 'checking host system type... '
 test -n "$host" || host=$($CC -dumpmachine 2>/dev/null) || fail "could not determine host"
@@ -70,12 +89,44 @@ case "$target" in
 	esac
 	startfiles='"-l", ":crt1.o", "-l", ":crti.o", "-l", ":crtbegin.o"'
 	endfiles='"-l", "c", "-l", ":crtend.o", "-l", ":crtn.o"'
+	nix_libcdir=
+	if [ "$is_nixos" -eq 1 ] && [ "$host" = "$target" ] ; then
+		case "$target" in
+		x86_64*)  nix_dl=$($CC -print-file-name=ld-linux-x86-64.so.2 2>/dev/null) ;;
+		aarch64*) nix_dl=$($CC -print-file-name=ld-linux-aarch64.so.1 2>/dev/null) ;;
+		riscv64*) nix_dl=$($CC -print-file-name=ld-linux-riscv64-lp64d.so.1 2>/dev/null) ;;
+		esac
+		if [ -z "$ldso_user_set" ] && is_abs_file "$nix_dl" ; then
+			DEFAULT_DYNAMIC_LINKER=$nix_dl
+		fi
+
+		nix_crt1=$($CC -print-file-name=crt1.o 2>/dev/null)
+		nix_crti=$($CC -print-file-name=crti.o 2>/dev/null)
+		nix_crtbegin=$($CC -print-file-name=crtbegin.o 2>/dev/null)
+		nix_crtend=$($CC -print-file-name=crtend.o 2>/dev/null)
+		nix_crtn=$($CC -print-file-name=crtn.o 2>/dev/null)
+		nix_libc=$($CC -print-file-name=libc.so 2>/dev/null)
+
+		if is_abs_file "$nix_crt1" && is_abs_file "$nix_crti" && is_abs_file "$nix_crtbegin" ; then
+			startfiles=$(printf '"%s", "%s", "%s"' "$nix_crt1" "$nix_crti" "$nix_crtbegin")
+		fi
+		if is_abs_file "$nix_crtend" && is_abs_file "$nix_crtn" ; then
+			endfiles=$(printf '"-l", "c", "%s", "%s"' "$nix_crtend" "$nix_crtn")
+		fi
+		if is_abs_file "$nix_libc" ; then
+			nix_libcdir=${nix_libc%/*}
+		fi
+	fi
 	if [ -z "$gcclibdir" ] ; then
 		test "$host" = "$target" || fail "gcc libdir must be specified when building a cross-compiler"
 		crtbegin=$($CC -print-file-name=crtbegin.o 2>/dev/null)
 		gcclibdir=${crtbegin%/*}
 	fi
-	linkflags='"-L", "'$gcclibdir'",'
+	if [ -n "$nix_libcdir" ] ; then
+		linkflags='"-L", "'$gcclibdir'", "-L", "'$nix_libcdir'",'
+	else
+		linkflags='"-L", "'$gcclibdir'",'
+	fi
 	;;
 *-*freebsd*)
 	: ${DEFAULT_DYNAMIC_LINKER:=/libexec/ld-elf.so.1}
