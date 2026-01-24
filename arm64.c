@@ -169,6 +169,24 @@ funcinit(struct func *f, struct decl *d, struct init *init, bool hasinit)
 }
 
 void
+funcasm(struct func *f, bool is_volatile, const char *templ,
+    struct asm_operand *outs, size_t nout,
+    struct asm_operand *ins, size_t nin,
+    char **clobbers, size_t nclobbers)
+{
+	(void)f;
+	(void)is_volatile;
+	(void)templ;
+	(void)outs;
+	(void)nout;
+	(void)ins;
+	(void)nin;
+	(void)clobbers;
+	(void)nclobbers;
+	unimp();
+}
+
+void
 emitfunc(struct func *f, bool global)
 {
 	(void)f;

@@ -6,6 +6,55 @@
 #include "util.h"
 #include "cc.h"
 
+static char *
+asm_string(void)
+{
+	struct stringlit lit;
+	struct type *t;
+
+	if (tok.kind != TSTRINGLIT)
+		error(&tok.loc, "expected string literal in inline asm");
+	t = stringconcat(&lit, false);
+	if (t->size != 1)
+		error(&tok.loc, "inline asm requires ordinary string literal");
+	return (char *)lit.data;
+}
+
+static void
+asm_operands(struct scope *s, struct array *ops)
+{
+	if (tok.kind == TCOLON || tok.kind == TRPAREN)
+		return;
+	for (;;) {
+		struct asm_operand *op;
+		char *constraint;
+		struct expr *e;
+
+		constraint = asm_string();
+		expect(TLPAREN, "after inline asm constraint");
+		e = expr(s);
+		expect(TRPAREN, "after inline asm operand");
+		op = arrayadd(ops, sizeof(*op));
+		op->constraint = constraint;
+		op->expr = e;
+		if (!consume(TCOMMA))
+			break;
+	}
+}
+
+static void
+asm_clobbers(struct array *clob)
+{
+	if (tok.kind == TRPAREN)
+		return;
+	for (;;) {
+		char *c = asm_string();
+		arrayaddptr(clob, c);
+		if (!consume(TCOMMA))
+			break;
+	}
+}
+
 /* 6.8.1 Labeled statements */
 static bool
 label(struct func *f, struct scope *s)
@@ -311,6 +360,38 @@ stmt(struct func *f, struct scope *s)
 		break;
 
 	case T__ASM__:
-		error(&tok.loc, "inline assembly is not yet supported");
+		next();
+		{
+			bool is_volatile = false;
+			char *templ;
+			struct array outs = {0};
+			struct array ins = {0};
+			struct array clob = {0};
+			size_t i;
+
+			while (consume(TVOLATILE))
+				is_volatile = true;
+			expect(TLPAREN, "after '__asm__'");
+			templ = asm_string();
+			if (consume(TCOLON)) {
+				asm_operands(s, &outs);
+				if (consume(TCOLON)) {
+					asm_operands(s, &ins);
+					if (consume(TCOLON))
+						asm_clobbers(&clob);
+				}
+			}
+			expect(TRPAREN, "after inline asm");
+			expect(TSEMICOLON, "after inline asm");
+			funcasm(f, is_volatile, templ,
+			    outs.val, outs.len / sizeof(struct asm_operand),
+			    ins.val, ins.len / sizeof(struct asm_operand),
+			    clob.val, clob.len / sizeof(char *));
+			for (i = 0; i < outs.len / sizeof(struct asm_operand); ++i)
+				delexpr(((struct asm_operand *)outs.val)[i].expr);
+			for (i = 0; i < ins.len / sizeof(struct asm_operand); ++i)
+				delexpr(((struct asm_operand *)ins.val)[i].expr);
+		}
+		break;
 	}
 }

@@ -559,6 +559,7 @@ keyword(struct token *tok)
 		{"__thread",       TTHREAD_LOCAL},
 		{"__typeof",       TTYPEOF},
 		{"__typeof__",     TTYPEOF},
+		{"__volatile",     TVOLATILE},
 		{"__volatile__",   TVOLATILE},
 		{"alignas",        TALIGNAS},
 		{"alignof",        TALIGNOF},

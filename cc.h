@@ -274,6 +274,7 @@ struct decl {
 	enum typequal qual;
 	struct value *value;
 	char *asmname;
+	char *regname;
 	bool defined;
 	bool tentative;
 	struct decl *next;
@@ -332,6 +333,11 @@ enum exprkind {
 struct stringlit {
 	size_t size;
 	void *data;
+};
+
+struct asm_operand {
+	char *constraint;
+	struct expr *expr;
 };
 
 struct expr {
@@ -526,6 +532,7 @@ struct expr *assignexpr(struct scope *);
 struct expr *condexpr(struct scope *);
 unsigned long long intconstexpr(struct scope *, bool);
 void delexpr(struct expr *);
+struct type *stringconcat(struct stringlit *, bool);
 
 struct expr *exprassign(struct expr *, struct type *);
 struct expr *exprpromote(struct expr *);
@@ -577,6 +584,10 @@ void funchlt(struct func *);
 struct gotolabel *funcgoto(struct func *, char *);
 void funcswitch(struct func *, struct value *, struct switchcases *, struct block *);
 void funcinit(struct func *, struct decl *, struct init *, bool);
+void funcasm(struct func *, bool, const char *,
+             struct asm_operand *, size_t,
+             struct asm_operand *, size_t,
+             char **, size_t);
 
 void emitfunc(struct func *, bool);
 void emitdata(struct decl *,  struct init *);

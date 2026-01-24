@@ -87,6 +87,40 @@ progname(char *name, char *fallback)
 	return slash ? slash + 1 : name;
 }
 
+void
+sbgrow(struct strbuf *sb, size_t add)
+{
+	size_t need;
+
+	need = sb->len + add + 1;
+	if (need <= sb->cap)
+		return;
+	if (!sb->cap)
+		sb->cap = 256;
+	while (sb->cap < need)
+		sb->cap *= 2;
+	sb->buf = xreallocarray(sb->buf, sb->cap, 1);
+}
+
+void
+sbaddc(struct strbuf *sb, char c)
+{
+	sbgrow(sb, 1);
+	sb->buf[sb->len++] = c;
+	sb->buf[sb->len] = 0;
+}
+
+void
+sbadds(struct strbuf *sb, const char *s)
+{
+	size_t n = strlen(s);
+
+	sbgrow(sb, n);
+	memcpy(sb->buf + sb->len, s, n);
+	sb->len += n;
+	sb->buf[sb->len] = 0;
+}
+
 void *
 arrayadd(struct array *a, size_t n)
 {

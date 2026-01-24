@@ -13,27 +13,6 @@
 #define GP_MAX 6
 #define FP_MAX 8
 
-struct strbuf {
-	char *buf;
-	size_t len;
-	size_t cap;
-};
-
-static void
-sbgrow(struct strbuf *sb, size_t add)
-{
-	size_t need;
-
-	need = sb->len + add + 1;
-	if (need <= sb->cap)
-		return;
-	if (!sb->cap)
-		sb->cap = 256;
-	while (sb->cap < need)
-		sb->cap *= 2;
-	sb->buf = xreallocarray(sb->buf, sb->cap, 1);
-}
-
 enum valkind {
 	V_NONE,
 	V_GLOBAL,
@@ -100,17 +79,364 @@ static const char *argreg32[] = {"%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"}
 static const char *argreg64[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
 static unsigned ldconst_id;
 
+enum asm_class {
+	ASM_REG,
+	ASM_MEM,
+	ASM_IMM,
+	ASM_XMM,
+	ASM_X87T,
+	ASM_X87U,
+};
+
+enum asm_reg {
+	ASM_RAX,
+	ASM_RBX,
+	ASM_RCX,
+	ASM_RDX,
+	ASM_RSI,
+	ASM_RDI,
+	ASM_R8,
+	ASM_R9,
+	ASM_R10,
+	ASM_R11,
+};
+
+struct asm_op {
+	struct expr *expr;
+	char *constraint;
+	bool is_output;
+	bool is_readwrite;
+	bool needs_input;
+	int match;
+	enum asm_class cls;
+	int reg;
+	int xmm;
+	struct expr *match_expr;
+	long addr_off;
+	long val_off;
+	size_t size;
+	char *loc;
+	char *imm;
+};
+
+static const char *asm_reg8[]  = {"%al", "%bl", "%cl", "%dl", "%sil", "%dil", "%r8b", "%r9b", "%r10b", "%r11b"};
+static const char *asm_reg16[] = {"%ax", "%bx", "%cx", "%dx", "%si", "%di", "%r8w", "%r9w", "%r10w", "%r11w"};
+static const char *asm_reg32[] = {"%eax", "%ebx", "%ecx", "%edx", "%esi", "%edi", "%r8d", "%r9d", "%r10d", "%r11d"};
+static const char *asm_reg64[] = {"%rax", "%rbx", "%rcx", "%rdx", "%rsi", "%rdi", "%r8", "%r9", "%r10", "%r11"};
+
+static const enum asm_reg asm_gp_pool[] = {ASM_R10, ASM_R11, ASM_R8, ASM_R9, ASM_RCX, ASM_RDX, ASM_RSI, ASM_RDI, ASM_RAX};
+
 static int is_flonum(struct type *t);
 static int is_longdouble(struct type *t);
 static int is_complex(struct type *t);
 static struct type *basetype(struct type *t);
 static void funccopy(struct func *f, int size);
 static void eval_vla(struct func *f, struct type *t);
+static void emitf(struct func *f, const char *fmt, ...);
 
 static int
 align_to(int n, int align)
 {
 	return (n + align - 1) / align * align;
+}
+
+static const char *
+asm_reg_name(enum asm_reg r, int size)
+{
+	if (size == 1)
+		return asm_reg8[r];
+	if (size == 2)
+		return asm_reg16[r];
+	if (size == 4)
+		return asm_reg32[r];
+	return asm_reg64[r];
+}
+
+static const char *asm_xmm_names[] = {
+	"%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7",
+};
+
+static const char *
+asm_xmm_name(int idx)
+{
+	return asm_xmm_names[idx];
+}
+
+static enum asm_reg
+asm_reg_from_name(const char *name)
+{
+	size_t len;
+
+	if (!name)
+		return -1;
+	len = strlen(name);
+	if (len >= 2 && name[0] == '"' && name[len - 1] == '"') {
+		++name;
+		len -= 2;
+	}
+	if (len == 3 && strncmp(name, "rax", len) == 0) return ASM_RAX;
+	if (len == 3 && strncmp(name, "rbx", len) == 0) return ASM_RBX;
+	if (len == 3 && strncmp(name, "rcx", len) == 0) return ASM_RCX;
+	if (len == 3 && strncmp(name, "rdx", len) == 0) return ASM_RDX;
+	if (len == 3 && strncmp(name, "rsi", len) == 0) return ASM_RSI;
+	if (len == 3 && strncmp(name, "rdi", len) == 0) return ASM_RDI;
+	if (len == 2 && strncmp(name, "r8", len) == 0) return ASM_R8;
+	if (len == 2 && strncmp(name, "r9", len) == 0) return ASM_R9;
+	if (len == 3 && strncmp(name, "r10", len) == 0) return ASM_R10;
+	if (len == 3 && strncmp(name, "r11", len) == 0) return ASM_R11;
+	return -1;
+}
+
+static int
+asm_alloc_gp(bool used[], enum asm_reg *out)
+{
+	size_t i;
+
+	for (i = 0; i < LEN(asm_gp_pool); ++i) {
+		enum asm_reg r = asm_gp_pool[i];
+		if (!used[r]) {
+			used[r] = true;
+			*out = r;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int
+asm_alloc_xmm(bool used[], int *out)
+{
+	int i;
+
+	for (i = 0; i < 8; ++i) {
+		if (!used[i]) {
+			used[i] = true;
+			*out = i;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void
+asm_spill_scalar(struct func *f, struct type *t, long off)
+{
+	t = basetype(t);
+	if (is_longdouble(t)) {
+		emitf(f, "\tfstpt %ld(%%rbp)\n", off);
+		return;
+	}
+	if (is_flonum(t)) {
+		if (t->size == 4)
+			emitf(f, "\tmovss %%xmm0, %ld(%%rbp)\n", off);
+		else
+			emitf(f, "\tmovsd %%xmm0, %ld(%%rbp)\n", off);
+		return;
+	}
+	switch (t->size) {
+	case 1: emitf(f, "\tmov %%al, %ld(%%rbp)\n", off); return;
+	case 2: emitf(f, "\tmov %%ax, %ld(%%rbp)\n", off); return;
+	case 4: emitf(f, "\tmov %%eax, %ld(%%rbp)\n", off); return;
+	case 8: emitf(f, "\tmov %%rax, %ld(%%rbp)\n", off); return;
+	}
+	fatal("unsupported asm spill size");
+}
+
+static void
+asm_load_to_reg(struct func *f, struct type *t, enum asm_reg r, long off)
+{
+	t = basetype(t);
+	switch (t->size) {
+	case 1: emitf(f, "\tmov %ld(%%rbp), %s\n", off, asm_reg_name(r, 1)); return;
+	case 2: emitf(f, "\tmov %ld(%%rbp), %s\n", off, asm_reg_name(r, 2)); return;
+	case 4: emitf(f, "\tmov %ld(%%rbp), %s\n", off, asm_reg_name(r, 4)); return;
+	case 8: emitf(f, "\tmov %ld(%%rbp), %s\n", off, asm_reg_name(r, 8)); return;
+	}
+	fatal("unsupported asm load size");
+}
+
+static void
+asm_load_to_xmm(struct func *f, struct type *t, int xmm, long off)
+{
+	t = basetype(t);
+	if (t->size == 4)
+		emitf(f, "\tmovss %ld(%%rbp), %s\n", off, asm_xmm_name(xmm));
+	else
+		emitf(f, "\tmovsd %ld(%%rbp), %s\n", off, asm_xmm_name(xmm));
+}
+
+static void
+asm_store_reg(struct func *f, struct type *t, enum asm_reg r, long addr_off)
+{
+	const char *addr_reg = "%r11";
+
+	if (r == ASM_R11)
+		addr_reg = "%rax";
+	t = basetype(t);
+	emitf(f, "\tmov %ld(%%rbp), %s\n", addr_off, addr_reg);
+	switch (t->size) {
+	case 1: emitf(f, "\tmov %s, (%s)\n", asm_reg_name(r, 1), addr_reg); return;
+	case 2: emitf(f, "\tmov %s, (%s)\n", asm_reg_name(r, 2), addr_reg); return;
+	case 4: emitf(f, "\tmov %s, (%s)\n", asm_reg_name(r, 4), addr_reg); return;
+	case 8: emitf(f, "\tmov %s, (%s)\n", asm_reg_name(r, 8), addr_reg); return;
+	}
+	fatal("unsupported asm store size");
+}
+
+static void
+asm_store_xmm(struct func *f, struct type *t, int xmm, long addr_off)
+{
+	t = basetype(t);
+	emitf(f, "\tmov %ld(%%rbp), %%r11\n", addr_off);
+	if (t->size == 4)
+		emitf(f, "\tmovss %s, (%%r11)\n", asm_xmm_name(xmm));
+	else
+		emitf(f, "\tmovsd %s, (%%r11)\n", asm_xmm_name(xmm));
+}
+
+static char *
+asm_expand(const char *tmpl, char **ops, size_t nops)
+{
+	struct strbuf sb = {0};
+	const char *p = tmpl;
+
+	while (*p) {
+		if (*p == '%' && p[1] == '%') {
+			sbaddc(&sb, '%');
+			p += 2;
+			continue;
+		}
+		if (*p == '%' && isdigit((unsigned char)p[1])) {
+			int idx = 0;
+			++p;
+			while (isdigit((unsigned char)*p)) {
+				idx = idx * 10 + (*p - '0');
+				++p;
+			}
+			if ((size_t)idx >= nops)
+				error(&tok.loc, "inline asm operand index out of range");
+			sbadds(&sb, ops[idx] ? ops[idx] : "");
+			continue;
+		}
+		sbaddc(&sb, *p++);
+	}
+	if (!sb.buf)
+		sbaddc(&sb, '\0');
+	return sb.buf;
+}
+
+static void
+asm_emit_text(struct func *f, const char *s)
+{
+	const char *p = s;
+
+	if (!*s)
+		return;
+	while (*p) {
+		const char *start = p;
+		while (*p && *p != '\n')
+			++p;
+		emitf(f, "\t%.*s\n", (int)(p - start), start);
+		if (*p == '\n')
+			++p;
+	}
+}
+
+static void
+asm_classify_op(struct asm_op *op, bool is_output)
+{
+	const char *p = op->constraint;
+	bool has_m = false;
+	bool has_r = false;
+	bool has_x = false;
+	bool has_t = false;
+	bool has_u = false;
+	bool has_i = false;
+	bool has_n = false;
+	bool has_N = false;
+	bool has_out = false;
+	int spec = -1;
+
+	op->is_readwrite = false;
+	op->match = -1;
+	op->reg = -1;
+	op->xmm = -1;
+
+	while (*p) {
+		if (*p == '=') {
+			has_out = true;
+			++p;
+			continue;
+		}
+		if (*p == '+') {
+			has_out = true;
+			op->is_readwrite = true;
+			++p;
+			continue;
+		}
+		if (*p == '&') {
+			++p;
+			continue;
+		}
+		break;
+	}
+	if (is_output && !has_out)
+		error(&tok.loc, "inline asm output constraint must use '=' or '+'");
+	if (!is_output && isdigit((unsigned char)*p)) {
+		op->match = *p - '0';
+		return;
+	}
+	for (; *p; ++p) {
+		switch (*p) {
+		case 'a': spec = ASM_RAX; break;
+		case 'b': spec = ASM_RBX; break;
+		case 'c': spec = ASM_RCX; break;
+		case 'd': spec = ASM_RDX; break;
+		case 'S': spec = ASM_RSI; break;
+		case 'D': spec = ASM_RDI; break;
+		case 'r': has_r = true; break;
+		case 'm': has_m = true; break;
+		case 'x': has_x = true; break;
+		case 't': has_t = true; break;
+		case 'u': has_u = true; break;
+		case 'i': has_i = true; break;
+		case 'n': has_n = true; break;
+		case 'N': has_N = true; break;
+		case 'g': has_r = true; break;
+		case 'X': has_r = true; break;
+		default: break;
+		}
+	}
+	if (spec != -1) {
+		op->cls = ASM_REG;
+		op->reg = spec;
+		return;
+	}
+	if (has_t) {
+		op->cls = ASM_X87T;
+		return;
+	}
+	if (has_u) {
+		op->cls = ASM_X87U;
+		return;
+	}
+	if (has_x) {
+		op->cls = ASM_XMM;
+		return;
+	}
+	if (has_m) {
+		op->cls = ASM_MEM;
+		return;
+	}
+	if (has_r) {
+		op->cls = ASM_REG;
+		return;
+	}
+	if (has_i || has_n || has_N) {
+		op->cls = ASM_IMM;
+		return;
+	}
+	error(&tok.loc, "unsupported inline asm constraint '%s'", op->constraint);
 }
 
 static long
@@ -2386,6 +2712,303 @@ funcdiscard(struct func *f, struct type *t)
 {
 	if (is_longdouble(t))
 		emitf(f, "\tfstp %%st(0)\n");
+}
+
+void
+funcasm(struct func *f, bool is_volatile, const char *templ,
+    struct asm_operand *outs, size_t nout,
+    struct asm_operand *ins, size_t nin,
+    char **clobbers, size_t nclobbers)
+{
+	struct asm_op *ops;
+	char **opstr;
+	bool used_gp[LEN(asm_reg64)] = {0};
+	bool used_xmm[8] = {0};
+	size_t nops = nout + nin;
+	size_t i;
+	int t_idx = -1;
+	int u_idx = -1;
+	int x87_depth = 0;
+
+	(void)is_volatile;
+	(void)clobbers;
+	(void)nclobbers;
+
+	if (!nops) {
+		if (templ)
+			asm_emit_text(f, templ);
+		return;
+	}
+
+	ops = xreallocarray(NULL, nops, sizeof(*ops));
+	memset(ops, 0, nops * sizeof(*ops));
+
+	for (i = 0; i < nout; ++i) {
+		struct asm_op *op = &ops[i];
+		struct type *t;
+
+		op->expr = outs[i].expr;
+		op->constraint = outs[i].constraint;
+		op->is_output = true;
+		asm_classify_op(op, true);
+		t = basetype(op->expr->type);
+		if (t->kind == TYPEARRAY || t->kind == TYPESTRUCT ||
+		    t->kind == TYPEUNION || t->kind == TYPECOMPLEX)
+			error(&tok.loc, "inline asm output has unsupported type");
+		if (op->cls == ASM_IMM)
+			error(&tok.loc, "inline asm output cannot be immediate");
+		if ((op->cls == ASM_X87T || op->cls == ASM_X87U) && t->kind != TYPELDOUBLE)
+			error(&tok.loc, "inline asm x87 constraint requires long double");
+		if (op->cls == ASM_XMM && !(t->prop & PROPFLOAT))
+			error(&tok.loc, "inline asm xmm constraint requires float or double");
+		if (op->cls == ASM_REG && (t->prop & PROPFLOAT))
+			error(&tok.loc, "inline asm register constraint not valid for float");
+		if (!op->expr->lvalue)
+			error(&tok.loc, "inline asm output must be lvalue");
+		op->size = t->size;
+	}
+	for (i = 0; i < nin; ++i) {
+		struct asm_op *op = &ops[nout + i];
+		struct type *t;
+
+		op->expr = ins[i].expr;
+		op->constraint = ins[i].constraint;
+		op->is_output = false;
+		asm_classify_op(op, false);
+		if (op->match >= 0 && (size_t)op->match >= nout)
+			error(&tok.loc, "inline asm matching constraint out of range");
+		t = basetype(op->expr->type);
+		if (t->kind == TYPEARRAY || t->kind == TYPESTRUCT ||
+		    t->kind == TYPEUNION || t->kind == TYPECOMPLEX)
+			error(&tok.loc, "inline asm input has unsupported type");
+		if ((op->cls == ASM_X87T || op->cls == ASM_X87U) && t->kind != TYPELDOUBLE)
+			error(&tok.loc, "inline asm x87 constraint requires long double");
+		if (op->cls == ASM_XMM && !(t->prop & PROPFLOAT))
+			error(&tok.loc, "inline asm xmm constraint requires float or double");
+		if (op->cls == ASM_REG && (t->prop & PROPFLOAT))
+			error(&tok.loc, "inline asm register constraint not valid for float");
+		op->size = t->size;
+	}
+
+	for (i = 0; i < nout; ++i)
+		ops[i].needs_input = ops[i].is_readwrite;
+	for (i = 0; i < nin; ++i) {
+		struct asm_op *op = &ops[nout + i];
+		if (op->match >= 0) {
+			ops[op->match].needs_input = true;
+			if (ops[op->match].match_expr)
+				error(&tok.loc, "inline asm has duplicate matching constraints");
+			ops[op->match].match_expr = op->expr;
+		}
+	}
+
+	for (i = 0; i < nout; ++i) {
+		struct asm_op *op = &ops[i];
+		if (op->cls == ASM_REG && op->reg >= 0)
+			used_gp[op->reg] = true;
+	}
+
+	for (i = 0; i < nout; ++i) {
+		struct asm_op *op = &ops[i];
+		if (op->cls == ASM_REG && op->reg < 0) {
+			if (op->expr->kind == EXPRIDENT && op->expr->u.ident.decl->regname) {
+				int r = asm_reg_from_name(op->expr->u.ident.decl->regname);
+				if (r >= 0 && !used_gp[r]) {
+					op->reg = r;
+					used_gp[r] = true;
+				}
+			}
+			if (op->reg < 0) {
+				enum asm_reg r = ASM_RAX;
+				if (!asm_alloc_gp(used_gp, &r))
+					error(&tok.loc, "inline asm ran out of registers");
+				op->reg = r;
+			}
+		} else if (op->cls == ASM_XMM && op->xmm < 0) {
+			if (!asm_alloc_xmm(used_xmm, &op->xmm))
+				error(&tok.loc, "inline asm ran out of xmm registers");
+		} else if (op->cls == ASM_MEM && op->reg < 0) {
+			enum asm_reg r = ASM_RAX;
+			if (!asm_alloc_gp(used_gp, &r))
+				error(&tok.loc, "inline asm ran out of registers");
+			op->reg = r;
+		}
+	}
+
+	for (i = 0; i < nin; ++i) {
+		struct asm_op *op = &ops[nout + i];
+		if (op->match >= 0)
+			continue;
+		if (op->cls == ASM_REG && op->reg < 0) {
+			if (op->expr->kind == EXPRIDENT && op->expr->u.ident.decl->regname) {
+				int r = asm_reg_from_name(op->expr->u.ident.decl->regname);
+				if (r >= 0 && !used_gp[r]) {
+					op->reg = r;
+					used_gp[r] = true;
+				}
+			}
+			if (op->reg < 0) {
+				enum asm_reg r = ASM_RAX;
+				if (!asm_alloc_gp(used_gp, &r))
+					error(&tok.loc, "inline asm ran out of registers");
+				op->reg = r;
+			}
+		} else if (op->cls == ASM_XMM && op->xmm < 0) {
+			if (!asm_alloc_xmm(used_xmm, &op->xmm))
+				error(&tok.loc, "inline asm ran out of xmm registers");
+		} else if (op->cls == ASM_MEM && op->reg < 0) {
+			enum asm_reg r = ASM_RAX;
+			if (!asm_alloc_gp(used_gp, &r))
+				error(&tok.loc, "inline asm ran out of registers");
+			op->reg = r;
+		}
+	}
+
+	for (i = 0; i < nout; ++i) {
+		struct asm_op *op = &ops[i];
+		op->addr_off = alloc_stack(f, 8, 8);
+		gen_addr(f, op->expr);
+		emitf(f, "\tmov %%rax, %ld(%%rbp)\n", op->addr_off);
+		if (op->needs_input &&
+		    (op->cls == ASM_REG || op->cls == ASM_XMM || op->cls == ASM_X87T)) {
+			struct expr *src = op->match_expr ? op->match_expr : op->expr;
+			op->val_off = alloc_stack(f, (int)op->size, basetype(src->type)->align);
+			if (op->match_expr) {
+				gen_expr(f, src);
+			} else {
+				emitf(f, "\tmov %ld(%%rbp), %%rax\n", op->addr_off);
+				load(f, op->expr->type);
+			}
+			asm_spill_scalar(f, src->type, op->val_off);
+		}
+		if (op->cls == ASM_X87T)
+			t_idx = (int)i;
+	}
+
+	for (i = 0; i < nin; ++i) {
+		struct asm_op *op = &ops[nout + i];
+		struct type *t = basetype(op->expr->type);
+
+		if (op->match >= 0)
+			continue;
+		if (op->cls == ASM_IMM) {
+			if (op->expr->kind != EXPRCONST)
+				error(&tok.loc, "inline asm immediate requires constant");
+			op->imm = xmalloc(64);
+			if (t->prop & PROPINT && t->u.basic.issigned)
+				snprintf(op->imm, 64, "$%lld", op->expr->u.constant.i);
+			else
+				snprintf(op->imm, 64, "$%llu", op->expr->u.constant.u);
+			continue;
+		}
+		if (op->cls == ASM_REG && op->reg == ASM_RDX &&
+		    strchr(op->constraint, 'N') && op->expr->kind == EXPRCONST) {
+			unsigned long long v = op->expr->u.constant.u;
+			if (v <= 0xff) {
+				op->cls = ASM_IMM;
+				op->imm = xmalloc(64);
+				snprintf(op->imm, 64, "$%llu", v);
+				continue;
+			}
+		}
+		if (op->cls == ASM_MEM) {
+			op->addr_off = alloc_stack(f, 8, 8);
+			gen_addr(f, op->expr);
+			emitf(f, "\tmov %%rax, %ld(%%rbp)\n", op->addr_off);
+			continue;
+		}
+		op->val_off = alloc_stack(f, (int)op->size, t->align);
+		gen_expr(f, op->expr);
+		asm_spill_scalar(f, op->expr->type, op->val_off);
+		if (op->cls == ASM_X87U)
+			u_idx = (int)(nout + i);
+		if (op->cls == ASM_X87T)
+			t_idx = (int)(nout + i);
+	}
+
+	for (i = 0; i < nops; ++i) {
+		struct asm_op *op = &ops[i];
+		if (op->match >= 0)
+			continue;
+		if (op->cls == ASM_MEM) {
+			emitf(f, "\tmov %ld(%%rbp), %s\n", op->addr_off, asm_reg_name(op->reg, 8));
+		}
+	}
+
+	for (i = 0; i < nops; ++i) {
+		struct asm_op *op = &ops[i];
+		if (op->match >= 0)
+			continue;
+		if (op->cls == ASM_REG) {
+			if (op->is_output && !op->needs_input)
+				continue;
+			asm_load_to_reg(f, op->expr->type, (enum asm_reg)op->reg, op->val_off);
+		}
+		if (op->cls == ASM_XMM) {
+			if (op->is_output && !op->needs_input)
+				continue;
+			asm_load_to_xmm(f, op->expr->type, op->xmm, op->val_off);
+		}
+	}
+
+	if (u_idx != -1 && ops[u_idx].val_off) {
+		emitf(f, "\tfldt %ld(%%rbp)\n", ops[u_idx].val_off);
+		++x87_depth;
+	}
+	if (t_idx != -1 && ops[t_idx].val_off) {
+		emitf(f, "\tfldt %ld(%%rbp)\n", ops[t_idx].val_off);
+		++x87_depth;
+	}
+
+	opstr = xreallocarray(NULL, nops, sizeof(*opstr));
+	for (i = 0; i < nops; ++i) {
+		struct asm_op *op = &ops[i];
+		const char *r64;
+
+		if (op->match >= 0) {
+			opstr[i] = opstr[op->match];
+			continue;
+		}
+		switch (op->cls) {
+		case ASM_REG:
+			opstr[i] = (char *)asm_reg_name((enum asm_reg)op->reg, (int)op->size);
+			break;
+		case ASM_XMM:
+			opstr[i] = (char *)asm_xmm_name(op->xmm);
+			break;
+		case ASM_MEM:
+			r64 = asm_reg_name((enum asm_reg)op->reg, 8);
+			op->loc = xmalloc(strlen(r64) + 3);
+			sprintf(op->loc, "(%s)", r64);
+			opstr[i] = op->loc;
+			break;
+		case ASM_IMM:
+			opstr[i] = op->imm;
+			break;
+		default:
+			opstr[i] = NULL;
+			break;
+		}
+	}
+
+	asm_emit_text(f, asm_expand(templ, opstr, nops));
+
+	if (t_idx != -1 && ops[t_idx].is_output) {
+		emitf(f, "\tmov %ld(%%rbp), %%rdi\n", ops[t_idx].addr_off);
+		emitf(f, "\tfstpt (%%rdi)\n");
+		if (x87_depth)
+			--x87_depth;
+	}
+	while (x87_depth-- > 0)
+		emitf(f, "\tfstp %%st(0)\n");
+
+	for (i = 0; i < nout; ++i) {
+		struct asm_op *op = &ops[i];
+		if (op->cls == ASM_REG)
+			asm_store_reg(f, op->expr->type, (enum asm_reg)op->reg, op->addr_off);
+		else if (op->cls == ASM_XMM)
+			asm_store_xmm(f, op->expr->type, op->xmm, op->addr_off);
+	}
 }
 
 static void

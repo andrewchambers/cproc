@@ -69,7 +69,6 @@ specified in `config.h`.
 ## What's missing
 
 - Digraph sequences ([6.4.6p3], will not be implemented).
-- Inline assembly ([#5]).
 - Preprocessor ([#6]).
 - Generation of position independent code (i.e. shared libraries,
   modules, PIEs).

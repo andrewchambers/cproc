@@ -8,6 +8,20 @@
 #include "util.h"
 #include "cc.h"
 
+static char *
+asm_string(void)
+{
+	struct stringlit lit;
+	struct type *t;
+
+	if (tok.kind != TSTRINGLIT)
+		error(&tok.loc, "expected string literal in inline asm");
+	t = stringconcat(&lit, false);
+	if (t->size != 1)
+		error(&tok.loc, "inline asm requires ordinary string literal");
+	return (char *)lit.data;
+}
+
 static struct decl *tentativedefns, **tentativedefnsend = &tentativedefns;
 
 struct qualtype {
@@ -1000,12 +1014,32 @@ decl(struct scope *s, struct func *f)
 	enum funcspec fs;
 	struct init *init;
 	bool hasinit;
-	char *name, *asmname;
+	char *name, *asmname, *regname;
 	int allowfunc = !f;
 	struct decl *d, *prior;
 	enum declkind kind;
 	struct scope *funcscope;
 	int align;
+
+	if (!f && tok.kind == T__ASM__) {
+		char *templ;
+		bool is_volatile = false;
+
+		next();
+		while (consume(TVOLATILE))
+			is_volatile = true;
+		expect(TLPAREN, "after '__asm__'");
+		templ = asm_string();
+		if (consume(TCOLON))
+			error(&tok.loc, "asm declaration does not support operands");
+		expect(TRPAREN, "after inline asm");
+		expect(TSEMICOLON, "after inline asm");
+		(void)is_volatile;
+		fputs(templ, stdout);
+		if (templ[0] && templ[strlen(templ) - 1] != '\n')
+			fputc('\n', stdout);
+		return true;
+	}
 
 	if (staticassert(s))
 		return true;
@@ -1029,6 +1063,7 @@ decl(struct scope *s, struct func *f)
 		return true;
 	}
 	for (;;) {
+		regname = NULL;
 		qt = declarator(s, base, &name, &funcscope, false);
 		t = qt.type;
 		tq = qt.qual;
@@ -1038,6 +1073,10 @@ decl(struct scope *s, struct func *f)
 			expect(TRPAREN, "after assembler name");
 			allowfunc = 0;
 		} else {
+			asmname = NULL;
+		}
+		if ((sc & SCREGISTER) && asmname) {
+			regname = asmname;
 			asmname = NULL;
 		}
 		kind = sc & SCTYPEDEF ? DECLTYPE : t->kind == TYPEFUNC ? DECLFUNC : DECLOBJECT;
@@ -1059,6 +1098,8 @@ decl(struct scope *s, struct func *f)
 			if (align && align < t->align)
 				error(&tok.loc, "object '%s' requires alignment %d, which is stricter than specified alignment %d", name, t->align, align);
 			d = declcommon(s, kind, name, asmname, t, tq, sc, prior);
+			if (regname)
+				d->regname = regname;
 			if (d->u.obj.align < align)
 				d->u.obj.align = align;
 			if (d->linkage == LINKNONE && !(sc & SCSTATIC)) {

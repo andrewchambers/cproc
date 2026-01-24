@@ -7,6 +7,12 @@ struct array {
 	size_t len, cap;
 };
 
+struct strbuf {
+	char *buf;
+	size_t len;
+	size_t cap;
+};
+
 struct treenode {
 	unsigned long long key;
 	void *child[2];
@@ -28,6 +34,10 @@ void *xreallocarray(void *, size_t, size_t);
 void *xmalloc(size_t);
 
 char *progname(char *, char *);
+
+void sbgrow(struct strbuf *, size_t);
+void sbaddc(struct strbuf *, char);
+void sbadds(struct strbuf *, const char *);
 
 void listinsert(struct list *, struct list *);
 void listremove(struct list *);
