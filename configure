@@ -62,20 +62,45 @@ case "$target" in
 	endfiles='"-l", "c", "-l", ":crtn.o"'
 	;;
 *-linux-*gnu*)
-	test "${DEFAULT_DYNAMIC_LINKER+set}" || case "$target" in
-	x86_64*)  DEFAULT_DYNAMIC_LINKER=/lib64/ld-linux-x86-64.so.2 ;;
-	aarch64*) DEFAULT_DYNAMIC_LINKER=/lib/ld-linux-aarch64.so.1  ;;
-	riscv64*) DEFAULT_DYNAMIC_LINKER=/lib/ld-linux-riscv64-lp64d.so.1 ;;
-	*) fail "unsuported target '$target'"
-	esac
-	startfiles='"-l", ":crt1.o", "-l", ":crti.o", "-l", ":crtbegin.o"'
-	endfiles='"-l", "c", "-l", ":crtend.o", "-l", ":crtn.o"'
-	if [ -z "$gcclibdir" ] ; then
-		test "$host" = "$target" || fail "gcc libdir must be specified when building a cross-compiler"
-		crtbegin=$($CC -print-file-name=crtbegin.o 2>/dev/null)
-		gcclibdir=${crtbegin%/*}
+	if [ -e /etc/NIXOS ] ; then
+		test "${DEFAULT_DYNAMIC_LINKER+set}" || case "$target" in
+		x86_64*)  DEFAULT_DYNAMIC_LINKER=$($CC -print-file-name=ld-linux-x86-64.so.2 2>/dev/null) ;;
+		aarch64*) DEFAULT_DYNAMIC_LINKER=$($CC -print-file-name=ld-linux-aarch64.so.1 2>/dev/null) ;;
+		riscv64*) DEFAULT_DYNAMIC_LINKER=$($CC -print-file-name=ld-linux-riscv64-lp64d.so.1 2>/dev/null) ;;
+		*) fail "unsuported target '$target'"
+		esac
+		case "$DEFAULT_DYNAMIC_LINKER" in
+		/*) ;;
+		*) fail "could not locate dynamic linker for NixOS" ;;
+		esac
+		startfiles='"-l", ":crt1.o", "-l", ":crti.o", "-l", ":crtbegin.o"'
+		endfiles='"-l", "c", "-l", ":crtend.o", "-l", ":crtn.o"'
+		if [ -z "$gcclibdir" ] ; then
+			test "$host" = "$target" || fail "gcc libdir must be specified when building a cross-compiler"
+			crtbegin=$($CC -print-file-name=crtbegin.o 2>/dev/null)
+			gcclibdir=${crtbegin%/*}
+		fi
+		crt1=$($CC -print-file-name=crt1.o 2>/dev/null)
+		glibclibdir=${crt1%/*}
+		test -n "$crt1" && test "$crt1" != "crt1.o" || fail "could not locate crt1.o for NixOS"
+		test -n "$gcclibdir" || fail "could not locate gcc libdir for NixOS"
+		linkflags='"-L", "'$glibclibdir'", "-L", "'$gcclibdir'",'
+	else
+		test "${DEFAULT_DYNAMIC_LINKER+set}" || case "$target" in
+		x86_64*)  DEFAULT_DYNAMIC_LINKER=/lib64/ld-linux-x86-64.so.2 ;;
+		aarch64*) DEFAULT_DYNAMIC_LINKER=/lib/ld-linux-aarch64.so.1  ;;
+		riscv64*) DEFAULT_DYNAMIC_LINKER=/lib/ld-linux-riscv64-lp64d.so.1 ;;
+		*) fail "unsuported target '$target'"
+		esac
+		startfiles='"-l", ":crt1.o", "-l", ":crti.o", "-l", ":crtbegin.o"'
+		endfiles='"-l", "c", "-l", ":crtend.o", "-l", ":crtn.o"'
+		if [ -z "$gcclibdir" ] ; then
+			test "$host" = "$target" || fail "gcc libdir must be specified when building a cross-compiler"
+			crtbegin=$($CC -print-file-name=crtbegin.o 2>/dev/null)
+			gcclibdir=${crtbegin%/*}
+		fi
+		linkflags='"-L", "'$gcclibdir'",'
 	fi
-	linkflags='"-L", "'$gcclibdir'",'
 	;;
 *-*freebsd*)
 	: ${DEFAULT_DYNAMIC_LINKER:=/libexec/ld-elf.so.1}
