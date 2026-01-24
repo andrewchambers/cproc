@@ -24,13 +24,11 @@ enum filetype {
 	CHDR,   /* C header */
 	CPPOUT, /* preprocessed C source */
 	OBJ,    /* object file */
-	QBE,    /* QBE IL */
 };
 
 enum stage {
 	PREPROCESS,
 	COMPILE,
-	CODEGEN,
 	ASSEMBLE,
 	LINK,
 };
@@ -58,7 +56,6 @@ static struct {
 static struct stageinfo stages[] = {
 	[PREPROCESS] = {.name = "preprocess"},
 	[COMPILE]    = {.name = "compile"},
-	[CODEGEN]    = {.name = "codegen"},
 	[ASSEMBLE]   = {.name = "assemble"},
 	[LINK]       = {.name = "link"},
 };
@@ -99,8 +96,6 @@ detectfiletype(const char *name)
 			return CHDR;
 		if (strcmp(dot, "i") == 0)
 			return CPPOUT;
-		if (strcmp(dot, "qbe") == 0)
-			return QBE;
 		if (strcmp(dot, "s") == 0)
 			return ASM;
 		if (strcmp(dot, "S") == 0)
@@ -245,10 +240,8 @@ buildobj(struct input *input, char *output)
 			output = NULL;
 	} else if (input->stages & 1<<ASSEMBLE) {
 		output = changeext(input->name, "o");
-	} else if (input->stages & 1<<CODEGEN) {
-		output = changeext(input->name, "s");
 	} else if (input->stages & 1<<COMPILE) {
-		output = changeext(input->name, "qbe");
+		output = changeext(input->name, "s");
 	}
 	if (strcmp(input->name, "-") == 0)
 		input->name = NULL;
@@ -344,21 +337,37 @@ nextarg(char ***argv)
 }
 
 static char *
-compilecommand(char *arg)
+compilecommand(char *arg, const char *backend)
 {
 	char self[PATH_MAX], *cmd;
-	size_t n;
+	const char *suffixes[] = {"-amd64", "-arm64"};
+	size_t baselen, backendlen, i, slen;
+	ssize_t nread;
 
-	n = readlink("/proc/self/exe", self, sizeof(self) - 5);
-	if (n == -1) {
-		n = strlen(arg);
-		if (n > sizeof(self) - 5)
+	backendlen = strlen(backend);
+	nread = readlink("/proc/self/exe", self, sizeof(self) - 1);
+	if (nread == -1) {
+		if (snprintf(self, sizeof(self), "%s", arg) >= (int)sizeof(self))
 			fatal("argv[0] is too large");
-		memcpy(self, arg, n);
-	} else if (n == sizeof(self) - 5) {
-		fatal("target of /proc/self/exe is too large");
+	} else {
+		if (nread >= (ssize_t)sizeof(self))
+			fatal("target of /proc/self/exe is too large");
+		self[nread] = '\0';
 	}
-	strcpy(self + n, "-qbe");
+
+	baselen = strlen(self);
+	for (i = 0; i < LEN(suffixes); ++i) {
+		slen = strlen(suffixes[i]);
+		if (baselen > slen && strcmp(self + baselen - slen, suffixes[i]) == 0) {
+			baselen -= slen;
+			break;
+		}
+	}
+	if (baselen + 1 + backendlen >= sizeof(self))
+		fatal("argv[0] is too large");
+	self[baselen] = '-';
+	memcpy(self + baselen + 1, backend, backendlen + 1);
+
 	cmd = strdup(self);
 	if (!cmd)
 		fatal("strdup:");
@@ -376,36 +385,31 @@ main(int argc, char *argv[])
 {
 	enum stage last = LINK;
 	enum filetype filetype = 0;
-	char *arg, *end, *output = NULL, *arch, *qbearch;
+	char *arg, *end, *output = NULL, *arch;
+	const char *backend;
 	struct array inputs = {0}, *cmd;
 	struct input *input;
 	size_t i;
 
 	argv0 = progname(argv[0], "cproc");
 
-	arrayaddbuf(&stages[PREPROCESS].cmd, preprocesscmd, sizeof(preprocesscmd));
-	arrayaddptr(&stages[COMPILE].cmd, compilecommand(argv[0]));
-	arrayaddbuf(&stages[CODEGEN].cmd, codegencmd, sizeof(codegencmd));
-	arrayaddbuf(&stages[ASSEMBLE].cmd, assemblecmd, sizeof(assemblecmd));
-	arrayaddbuf(&stages[LINK].cmd, linkcmd, sizeof(linkcmd));
-
 	if (hasprefix(target, "x86_64-") || hasprefix(target, "amd64-")) {
 		arch = "x86_64-sysv";
-		qbearch = "amd64_sysv";
+		backend = "amd64";
 	} else if (hasprefix(target, "aarch64-")) {
 		arch = "aarch64";
-		qbearch = "arm64";
-	} else if (hasprefix(target, "riscv64-")) {
-		arch = "riscv64";
-		qbearch = "rv64";
+		backend = "arm64";
 	} else {
 		fatal("unsupported target '%s'", target);
 		return 1;  /* unreachable */
 	}
+
+	arrayaddbuf(&stages[PREPROCESS].cmd, preprocesscmd, sizeof(preprocesscmd));
+	arrayaddptr(&stages[COMPILE].cmd, compilecommand(argv[0], backend));
+	arrayaddbuf(&stages[ASSEMBLE].cmd, assemblecmd, sizeof(assemblecmd));
+	arrayaddbuf(&stages[LINK].cmd, linkcmd, sizeof(linkcmd));
 	arrayaddptr(&stages[COMPILE].cmd, "-t");
 	arrayaddptr(&stages[COMPILE].cmd, arch);
-	arrayaddptr(&stages[CODEGEN].cmd, "-t");
-	arrayaddptr(&stages[CODEGEN].cmd, qbearch);
 
 	for (;;) {
 ignore:
@@ -421,10 +425,9 @@ ignore:
 			switch (input->filetype) {
 			case ASM:    input->stages =                                     1<<ASSEMBLE|1<<LINK; break;
 			case ASMPP:  input->stages = 1<<PREPROCESS|                      1<<ASSEMBLE|1<<LINK; break;
-			case C:      input->stages = 1<<PREPROCESS|1<<COMPILE|1<<CODEGEN|1<<ASSEMBLE|1<<LINK; break;
+			case C:      input->stages = 1<<PREPROCESS|1<<COMPILE|1<<ASSEMBLE|1<<LINK; break;
 			case CHDR:   input->stages = 1<<PREPROCESS                                          ; break;
-			case CPPOUT: input->stages =               1<<COMPILE|1<<CODEGEN|1<<ASSEMBLE|1<<LINK; break;
-			case QBE:    input->stages =                          1<<CODEGEN|1<<ASSEMBLE|1<<LINK; break;
+			case CPPOUT: input->stages =               1<<COMPILE|1<<ASSEMBLE|1<<LINK; break;
 			case OBJ:    input->stages =                                                 1<<LINK; break;
 			default:     usage("reading from standard input requires -x");
 			}
@@ -444,8 +447,6 @@ ignore:
 			arrayaddptr(&stages[PREPROCESS].cmd, arg);
 		} else if (strcmp(arg, "-static") == 0) {
 			arrayaddptr(&stages[LINK].cmd, arg);
-		} else if (strcmp(arg, "-emit-qbe") == 0) {
-			last = COMPILE;
 		} else if (strcmp(arg, "-include") == 0 || strcmp(arg, "-idirafter") == 0 || strcmp(arg, "-isystem") == 0 || strcmp(arg, "-iquote") == 0) {
 			if (!--argc)
 				usage(NULL);
@@ -519,7 +520,7 @@ ignore:
 				arrayaddptr(&stages[PREPROCESS].cmd, "-P");
 				break;
 			case 'S':
-				last = CODEGEN;
+				last = COMPILE;
 				break;
 			case 's':
 				arrayaddptr(&stages[LINK].cmd, "-s");
@@ -559,8 +560,6 @@ ignore:
 					filetype = CHDR;
 				else if (strcmp(arg, "cpp-output") == 0)
 					filetype = CPPOUT;
-				else if (strcmp(arg, "qbe") == 0)
-					filetype = QBE;
 				else if (strcmp(arg, "assembler") == 0)
 					filetype = ASM;
 				else if (strcmp(arg, "assembler-with-cpp") == 0)

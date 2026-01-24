@@ -18,7 +18,6 @@ for arg ; do
 	--host=*) host=${arg#*=} ;;
 	--target=*) target=${arg#*=} ;;
 	--with-cpp=*) DEFAULT_PREPROCESSOR=${arg#*=} ;;
-	--with-qbe=*) DEFAULT_QBE=${arg#*=} ;;
 	--with-as=*) DEFAULT_ASSEMBLER=${arg#*=} ;;
 	--with-ld=*) DEFAULT_LINKER=${arg#*=} ;;
 	--with-ldso=*) DEFAULT_DYNAMIC_LINKER=${arg#*=} ;;
@@ -182,7 +181,6 @@ case "$target" in
 esac
 
 : ${DEFAULT_PREPROCESSOR:=${toolprefix}cpp}
-: ${DEFAULT_QBE:=qbe}
 : ${DEFAULT_ASSEMBLER:=${toolprefix}as}
 : ${DEFAULT_LINKER:=${toolprefix}ld}
 
@@ -211,7 +209,6 @@ static const char *const preprocesscmd[] = {
 	/* ignore extension markers */
 	"-D", "__extension__=",
 $defines};
-static const char *const codegencmd[]    = {"$DEFAULT_QBE"};
 static const char *const assemblecmd[]   = {"$DEFAULT_ASSEMBLER"};
 static const char *const linkcmd[]       = {"$DEFAULT_LINKER", $linkflags};
 EOF

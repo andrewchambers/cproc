@@ -2,7 +2,7 @@
 
 [![builds.sr.ht status](https://builds.sr.ht/~mcf/cproc/commits/master.svg)](https://builds.sr.ht/~mcf/cproc/commits/master)
 
-`cproc` is a [C11] compiler using [QBE] as a backend. It is released
+`cproc` is a [C11] compiler with a native amd64 backend. It is released
 under the [ISC] license.
 
 Some [C23 features] and [GNU C extensions] are also implemented.
@@ -22,24 +22,14 @@ any conforming C99 compiler.
 The POSIX driver depends on POSIX.1-2008 interfaces, and the `Makefile`
 requires a POSIX-compatible make(1).
 
-At runtime, you will need QBE, an assembler, and a linker for the
-target system. Since the preprocessor is not yet implemented, an
-external one is currently required as well.
+At runtime, you will need an assembler and a linker for the target
+system. Since the preprocessor is not yet implemented, an external one
+is currently required as well.
 
 ## Supported targets
 
-All architectures supported by QBE should work (currently x86\_64,
-aarch64, and riscv64).
-
-The following targets are tested by the continuous build and known to
-bootstrap and pass all tests:
-
-- `x86_64-linux-musl`
-- `x86_64-linux-gnu`
-- `x86_64-freebsd`
-- `aarch64-linux-musl`
-- `aarch64-linux-gnu`
-- `riscv64-linux-gnu`
+The native backend currently supports x86\_64 (System V ABI). The
+aarch64 backend is present but not yet implemented.
 
 ## Building
 
@@ -54,7 +44,7 @@ string arrays (`static char *[]`):
   command (including libc).
 - **`preprocesscmd`**: The preprocessor command, and any necessary flags
   for the target system.
-- **`codegencmd`**: The QBE command, and possibly explicit target flags.
+- **`codegencmd`**: The backend command, and possibly explicit target flags.
 - **`assemblecmd`**: The assembler command.
 - **`linkcmd`**: The linker command.
 
@@ -101,7 +91,6 @@ Please report any issues to [~mcf/cproc@todo.sr.ht].
 Patches are greatly appreciated. Send them to the mailing list
 (preferred), or as pull-requests on the [GitHub mirror].
 
-[QBE]: https://c9x.me/compile/
 [C11]: http://port70.net/~nsz/c/c11/n1570.html
 [ISC]: https://git.sr.ht/~mcf/cproc/blob/master/LICENSE
 [C23 features]: https://man.sr.ht/~mcf/cproc/doc/c23.md

@@ -18,7 +18,7 @@ main(int argc, char *argv[])
 	bool pponly = false;
 	char *output = NULL, *target = NULL;
 
-	argv0 = progname(argv[0], "cproc-qbe");
+	argv0 = progname(argv[0], "cproc-backend");
 	ARGBEGIN {
 	case 'E':
 		pponly = true;
@@ -63,6 +63,7 @@ main(int argc, char *argv[])
 			}
 		}
 		emittentativedefns();
+		fputs("\t.section .note.GNU-stack,\"\",@progbits\n", stdout);
 	}
 
 	fflush(stdout);
