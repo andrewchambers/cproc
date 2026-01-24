@@ -1468,11 +1468,18 @@ gen_addr(struct func *f, struct expr *e)
 			emitf(f, "\tlea %ld(%%rbp), %%rax\n", v->offset);
 			return;
 		}
-		if (v->kind == V_GLOBAL) {
-			if (v->id)
+	if (v->kind == V_GLOBAL) {
+			if (v->thread) {
+				emitf(f, "\tmov %%fs:0, %%rax\n");
+				if (v->id)
+					emitf(f, "\tadd $.L%u.%s@tpoff, %%rax\n", v->id, v->u.name);
+				else
+					emitf(f, "\tadd $%s@tpoff, %%rax\n", v->u.name);
+			} else if (v->id) {
 				emitf(f, "\tlea .L%u.%s(%%rip), %%rax\n", v->id, v->u.name);
-			else
+			} else {
 				emitf(f, "\tlea %s(%%rip), %%rax\n", v->u.name);
+			}
 			return;
 		}
 		break;
@@ -3189,7 +3196,10 @@ emitdata(struct decl *d, struct init *init)
 	}
 
 	if (!init) {
-		printf(".bss\n");
+		if (d->u.obj.storage == SDTHREAD)
+			printf(".section .tbss,\"awT\",@nobits\n");
+		else
+			printf(".bss\n");
 		printf(".align %d\n", align);
 		print_sym(d->value);
 		printf(":\n");
@@ -3197,7 +3207,10 @@ emitdata(struct decl *d, struct init *init)
 		return;
 	}
 
-	printf(".data\n");
+	if (d->u.obj.storage == SDTHREAD)
+		printf(".section .tdata,\"awT\",@progbits\n");
+	else
+		printf(".data\n");
 	printf(".align %d\n", align);
 	print_sym(d->value);
 	printf(":\n");

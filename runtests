@@ -28,6 +28,14 @@ for test ; do
 	[ -f "$test" ] || continue
 	base=${test##*/}
 	name=${base%.c}
+	cflags=$CFLAGS
+	ldflags=$LDFLAGS
+	case "$name" in
+	*+pthread*)
+		cflags="$cflags -pthread"
+		ldflags="$ldflags -pthread"
+		;;
+	esac
 	case "$name" in
 	*+*)
 		arch=${name##*+}
@@ -38,7 +46,7 @@ for test ; do
 	esac
 	exe="$tmp/${base%.c}"
 	numtest=$((numtest + 1))
-	if "$CCPROC" $CFLAGS "$test" -o "$exe" $LDFLAGS && "$exe" >/dev/null 2>&1 ; then
+	if "$CCPROC" $cflags "$test" -o "$exe" $ldflags && "$exe" >/dev/null 2>&1 ; then
 		result="PASS"
 		numpass=$((numpass + 1))
 	else
