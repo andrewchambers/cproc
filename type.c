@@ -13,6 +13,10 @@
 	.kind = k, .size = n, .align = n, \
 	.prop = PROPSCALAR|PROPARITH|PROPREAL|PROPFLOAT, \
 }
+#define COMPLEXTYPE(n, a, b) { \
+	.kind = TYPECOMPLEX, .size = n, .align = a, .base = b, \
+	.prop = PROPSCALAR|PROPARITH|PROPCOMPLEX, \
+}
 
 struct type typevoid    = {.kind = TYPEVOID, .incomplete = true};
 
@@ -37,6 +41,9 @@ struct type typeullong  = INTTYPE(TYPELLONG, 8, false, 0);
 struct type typefloat   = FLTTYPE(TYPEFLOAT, 4);
 struct type typedouble  = FLTTYPE(TYPEDOUBLE, 8);
 struct type typeldouble = FLTTYPE(TYPELDOUBLE, 16);
+struct type typecfloat  = COMPLEXTYPE(8, 4, &typefloat);
+struct type typecdouble = COMPLEXTYPE(16, 8, &typedouble);
+struct type typecldouble = COMPLEXTYPE(32, 16, &typeldouble);
 
 struct type typenullptr = {.kind = TYPENULLPTR, .size = 8, .align = 8, .prop = PROPSCALAR};
 
@@ -148,6 +155,8 @@ typecompatible(struct type *t1, struct type *t2)
 		if (p1 || p2)
 			return false;
 		goto derived;
+	case TYPECOMPLEX:
+		return typecompatible(t1->base, t2->base);
 	derived:
 		return t1->qual == t2->qual && typecompatible(t1->base, t2->base);
 	}
@@ -214,6 +223,21 @@ typecommonreal(struct type *t1, unsigned w1, struct type *t2, unsigned w2)
 	if (t2 == &typellong)
 		return &typeullong;
 	fatal("internal error; could not find common real type");
+	return NULL;
+}
+
+struct type *
+typecomplex(struct type *base)
+{
+	if (base->kind == TYPEENUM)
+		base = base->base;
+	if (base == &typefloat)
+		return &typecfloat;
+	if (base == &typedouble)
+		return &typecdouble;
+	if (base == &typeldouble)
+		return &typecldouble;
+	fatal("internal error; invalid complex base type");
 	return NULL;
 }
 

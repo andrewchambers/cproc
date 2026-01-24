@@ -399,7 +399,8 @@ declspecs(struct scope *s, enum storageclass *sc, enum funcspec *fs, int *align)
 			next();
 			break;
 		case T_COMPLEX:
-			error(&tok.loc, "_Complex is not yet supported");
+			ts |= SPECCOMPLEX;
+			next();
 			break;
 		case T_ATOMIC:
 			error(&tok.loc, "_Atomic is not yet supported");
@@ -466,7 +467,10 @@ declspecs(struct scope *s, enum storageclass *sc, enum funcspec *fs, int *align)
 			error(&tok.loc, "multiple types in declaration specifiers");
 	}
 done:
-	switch ((int)ts) {
+	{
+		bool iscomplex = ts & SPECCOMPLEX;
+		ts &= ~SPECCOMPLEX;
+		switch ((int)ts) {
 	case SPECNONE:                                            break;
 	case SPECCHAR:                          t = &typechar;    break;
 	case SPECSIGNED|SPECCHAR:               t = &typeschar;   break;
@@ -499,6 +503,16 @@ done:
 	case SPECLONG|SPECDOUBLE:               t = &typeldouble; break;
 	default:
 		error(&tok.loc, "invalid combination of type specifiers");
+	}
+		if (iscomplex) {
+			if (!t)
+				t = &typedouble;
+			if (t->kind == TYPECOMPLEX)
+				error(&tok.loc, "duplicate '_Complex'");
+			if (!(t->prop & PROPFLOAT))
+				error(&tok.loc, "_Complex must be used with floating types");
+			t = typecomplex(t);
+		}
 	}
 	if (!t && (tq || sc && *sc || fs && *fs))
 		error(&tok.loc, "declaration has no type specifier");

@@ -102,6 +102,7 @@ static unsigned ldconst_id;
 
 static int is_flonum(struct type *t);
 static int is_longdouble(struct type *t);
+static int is_complex(struct type *t);
 static struct type *basetype(struct type *t);
 static void funccopy(struct func *f, int size);
 static void eval_vla(struct func *f, struct type *t);
@@ -228,7 +229,7 @@ mkfunc(struct decl *decl, char *name, struct type *t, struct scope *s)
 	f->cur = f->start;
 
 	/* reserve slot for hidden return buffer if returning struct/union */
-	if (t->base->kind == TYPESTRUCT || t->base->kind == TYPEUNION) {
+	if (t->base->kind == TYPESTRUCT || t->base->kind == TYPEUNION || t->base->kind == TYPECOMPLEX) {
 		f->retbuf_offset = alloc_stack(f, 8, 8);
 	}
 
@@ -238,7 +239,8 @@ mkfunc(struct decl *decl, char *name, struct type *t, struct scope *s)
 		int align = d->type->align;
 		int size = (int)d->type->size;
 
-		if (d->type->kind == TYPESTRUCT || d->type->kind == TYPEUNION || d->type->kind == TYPEARRAY) {
+		if (d->type->kind == TYPESTRUCT || d->type->kind == TYPEUNION ||
+		    d->type->kind == TYPECOMPLEX || d->type->kind == TYPEARRAY) {
 			/* pass by reference, store pointer */
 			align = 8;
 			size = 8;
@@ -256,11 +258,12 @@ mkfunc(struct decl *decl, char *name, struct type *t, struct scope *s)
 		int fp = 0;
 		int stack_bytes = 0;
 
-		if (t->base->kind == TYPESTRUCT || t->base->kind == TYPEUNION)
+		if (t->base->kind == TYPESTRUCT || t->base->kind == TYPEUNION || t->base->kind == TYPECOMPLEX)
 			gp = 1;
 		for (d = t->u.func.params; d; d = d->next) {
 			struct type *pt = d->type;
-			if (pt->kind == TYPESTRUCT || pt->kind == TYPEUNION || pt->kind == TYPEARRAY)
+			if (pt->kind == TYPESTRUCT || pt->kind == TYPEUNION ||
+			    pt->kind == TYPECOMPLEX || pt->kind == TYPEARRAY)
 				pt = mkpointertype(pt, QUALNONE);
 			if (is_longdouble(pt)) {
 				int pad = (16 - (stack_bytes % 16)) % 16;
@@ -359,12 +362,20 @@ funcjmp(struct func *f, struct block *l)
 }
 
 static void cmp_zero(struct func *f, struct type *t);
+static void tobool(struct func *f, struct type *t);
 
 void
 funcjnz(struct func *f, struct value *v, struct type *t, struct block *l1, struct block *l2)
 {
 	(void)v;
 	t = basetype(t);
+	if (is_complex(t)) {
+		tobool(f, t);
+		emitf(f, "\tcmp $0, %%eax\n");
+		emitf(f, "\tjne %s\n", l1->label);
+		emitf(f, "\tjmp %s\n", l2->label);
+		return;
+	}
 	if (is_longdouble(t)) {
 		emitf(f, "\tfldz\n");
 		emitf(f, "\tfxch %%st(1)\n");
@@ -394,7 +405,8 @@ void
 funcret(struct func *f, struct value *v)
 {
 	(void)v;
-	if (f->type->base->kind == TYPESTRUCT || f->type->base->kind == TYPEUNION) {
+	if (f->type->base->kind == TYPESTRUCT || f->type->base->kind == TYPEUNION ||
+	    f->type->base->kind == TYPECOMPLEX) {
 		/* copy return value into hidden retbuf */
 		emitf(f, "\tmov %ld(%%rbp), %%rdi\n", f->retbuf_offset);
 		emitf(f, "\tmov %%rax, %%rsi\n");
@@ -441,6 +453,13 @@ is_longdouble(struct type *t)
 {
 	t = basetype(t);
 	return t->kind == TYPELDOUBLE;
+}
+
+static int
+is_complex(struct type *t)
+{
+	t = basetype(t);
+	return t->kind == TYPECOMPLEX;
 }
 
 static int
@@ -504,6 +523,53 @@ popld(struct func *f)
 }
 
 static void
+store_fp_const(struct func *f, struct type *t, long double val, const char *reg, long offset)
+{
+	unsigned long long imm;
+	union { float f; unsigned u; } c32;
+	union { double f; unsigned long long u; } c64;
+
+	t = basetype(t);
+	if (t->kind == TYPELDOUBLE) {
+		unsigned char bytes[16];
+		unsigned id = ++ldconst_id;
+		memcpy(bytes, &val, sizeof(bytes));
+		emitf(f, "\t.section .rodata\n\t.align 16\n.LC%u:\n", id);
+		for (int i = 0; i < 16; ++i)
+			emitf(f, "\t.byte %u\n", (unsigned)bytes[i]);
+		emitf(f, "\t.text\n");
+		emitf(f, "\tfldt .LC%u(%%rip)\n", id);
+		emitf(f, "\tfstpt %ld(%s)\n", offset, reg);
+		return;
+	}
+	if (t->size == 4) {
+		c32.f = (float)val;
+		emitf(f, "\tmov $%u, %%r11d\n", c32.u);
+		emitf(f, "\tmov %%r11d, %ld(%s)\n", offset, reg);
+		return;
+	}
+	c64.f = (double)val;
+	imm = c64.u;
+	emitf(f, "\tmov $%llu, %%r11\n", imm);
+	emitf(f, "\tmov %%r11, %ld(%s)\n", offset, reg);
+}
+
+static void
+store_fp_zero(struct func *f, struct type *t, const char *reg, long offset)
+{
+	t = basetype(t);
+	if (t->kind == TYPELDOUBLE) {
+		emitf(f, "\tfldz\n");
+		emitf(f, "\tfstpt %ld(%s)\n", offset, reg);
+		return;
+	}
+	if (t->size == 4)
+		emitf(f, "\tmovl $0, %ld(%s)\n", offset, reg);
+	else
+		emitf(f, "\tmovq $0, %ld(%s)\n", offset, reg);
+}
+
+static void
 gen_addr(struct func *f, struct expr *e);
 static void
 gen_expr(struct func *f, struct expr *e);
@@ -512,7 +578,8 @@ static void
 load(struct func *f, struct type *t)
 {
 	t = basetype(t);
-	if (t->kind == TYPEARRAY || t->kind == TYPESTRUCT || t->kind == TYPEUNION || t->kind == TYPEFUNC)
+	if (t->kind == TYPEARRAY || t->kind == TYPESTRUCT || t->kind == TYPEUNION ||
+	    t->kind == TYPECOMPLEX || t->kind == TYPEFUNC)
 		return;
 	if (is_longdouble(t)) {
 		emitf(f, "\tfldt (%%rax)\n");
@@ -546,7 +613,8 @@ static void
 store(struct func *f, struct type *t)
 {
 	t = basetype(t);
-	if (t->kind == TYPEARRAY || t->kind == TYPESTRUCT || t->kind == TYPEUNION)
+	if (t->kind == TYPEARRAY || t->kind == TYPESTRUCT || t->kind == TYPEUNION ||
+	    t->kind == TYPECOMPLEX)
 		return;
 	if (is_longdouble(t)) {
 		emitf(f, "\tfstpt (%%rdi)\n");
@@ -743,6 +811,43 @@ static void
 tobool(struct func *f, struct type *t)
 {
 	t = basetype(t);
+	if (is_complex(t)) {
+		struct type *bt = t->base;
+		int off = (int)bt->size;
+		if (bt->kind == TYPELDOUBLE) {
+			emitf(f, "\tfldt (%%rax)\n");
+			emitf(f, "\tfldz\n");
+			emitf(f, "\tfxch %%st(1)\n");
+			emitf(f, "\tfucomip %%st(1), %%st\n");
+			emitf(f, "\tfstp %%st(0)\n");
+			emitf(f, "\tsetp %%al\n\tsetne %%dl\n\tor %%dl, %%al\n");
+			emitf(f, "\tfldt %d(%%rax)\n", off);
+			emitf(f, "\tfldz\n");
+			emitf(f, "\tfxch %%st(1)\n");
+			emitf(f, "\tfucomip %%st(1), %%st\n");
+			emitf(f, "\tfstp %%st(0)\n");
+			emitf(f, "\tsetp %%dl\n\tsetne %%cl\n\tor %%cl, %%dl\n");
+			emitf(f, "\tor %%dl, %%al\n\tmovzb %%al, %%eax\n");
+			return;
+		}
+		if (bt->size == 4) {
+			emitf(f, "\tmov (%%rax), %%ecx\n");
+			emitf(f, "\tmov %d(%%rax), %%edx\n", off);
+			emitf(f, "\tand $0x7fffffff, %%ecx\n");
+			emitf(f, "\tand $0x7fffffff, %%edx\n");
+			emitf(f, "\tor %%edx, %%ecx\n");
+			emitf(f, "\tsetne %%al\n\tmovzb %%al, %%eax\n");
+			return;
+		}
+		emitf(f, "\tmov (%%rax), %%rcx\n");
+		emitf(f, "\tmov %d(%%rax), %%rdx\n", off);
+		emitf(f, "\tmov $0x7fffffffffffffff, %%r11\n");
+		emitf(f, "\tand %%r11, %%rcx\n");
+		emitf(f, "\tand %%r11, %%rdx\n");
+		emitf(f, "\tor %%rdx, %%rcx\n");
+		emitf(f, "\tsetne %%al\n\tmovzb %%al, %%eax\n");
+		return;
+	}
 	if (is_longdouble(t)) {
 		emitf(f, "\tfldz\n");
 		emitf(f, "\tfxch %%st(1)\n");
@@ -859,6 +964,7 @@ cast(struct func *f, struct type *from, struct type *to)
 {
 	int t1, t2;
 	struct type *bf, *bt;
+	bool from_complex, to_complex;
 
 	if (to->kind == TYPEVOID)
 		return;
@@ -868,6 +974,74 @@ cast(struct func *f, struct type *from, struct type *to)
 	}
 	bf = basetype(from);
 	bt = basetype(to);
+	from_complex = bf->kind == TYPECOMPLEX;
+	to_complex = bt->kind == TYPECOMPLEX;
+	if (from_complex || to_complex) {
+		if (from_complex && to_complex) {
+			struct type *fb = bf->base;
+			struct type *tb = bt->base;
+			struct value *tmp;
+
+			if (typecompatible(bf, bt))
+				return;
+			tmp = mkvalue(V_TEMP);
+			tmp->offset = alloc_stack(f, (int)bt->size, bt->align);
+			emitf(f, "\tmov %%rax, %%r11\n");
+
+			if (fb->kind == TYPELDOUBLE)
+				emitf(f, "\tfldt (%%r11)\n");
+			else if (fb->size == 4)
+				emitf(f, "\tmovss (%%r11), %%xmm0\n");
+			else
+				emitf(f, "\tmovsd (%%r11), %%xmm0\n");
+			cast(f, fb, tb);
+			emitf(f, "\tlea %ld(%%rbp), %%rdi\n", tmp->offset);
+			store(f, tb);
+			if (tb->kind == TYPELDOUBLE)
+				emitf(f, "\tfstp %%st(0)\n");
+
+			if (fb->kind == TYPELDOUBLE)
+				emitf(f, "\tfldt %d(%%r11)\n", (int)fb->size);
+			else if (fb->size == 4)
+				emitf(f, "\tmovss %d(%%r11), %%xmm0\n", (int)fb->size);
+			else
+				emitf(f, "\tmovsd %d(%%r11), %%xmm0\n", (int)fb->size);
+			cast(f, fb, tb);
+			emitf(f, "\tlea %ld(%%rbp), %%rdi\n", tmp->offset + (long)tb->size);
+			store(f, tb);
+			if (tb->kind == TYPELDOUBLE)
+				emitf(f, "\tfstp %%st(0)\n");
+
+			emitf(f, "\tlea %ld(%%rbp), %%rax\n", tmp->offset);
+			return;
+		}
+		if (to_complex) {
+			struct type *tb = bt->base;
+			struct value *tmp = mkvalue(V_TEMP);
+
+			tmp->offset = alloc_stack(f, (int)bt->size, bt->align);
+			cast(f, from, tb);
+			emitf(f, "\tlea %ld(%%rbp), %%rdi\n", tmp->offset);
+			store(f, tb);
+			if (tb->kind == TYPELDOUBLE)
+				emitf(f, "\tfstp %%st(0)\n");
+			store_fp_zero(f, tb, "%rdi", (long)tb->size);
+			emitf(f, "\tlea %ld(%%rbp), %%rax\n", tmp->offset);
+			return;
+		}
+		/* complex to scalar: use real component */
+		{
+			struct type *fb = bf->base;
+			if (fb->kind == TYPELDOUBLE)
+				emitf(f, "\tfldt (%%rax)\n");
+			else if (fb->size == 4)
+				emitf(f, "\tmovss (%%rax), %%xmm0\n");
+			else
+				emitf(f, "\tmovsd (%%rax), %%xmm0\n");
+			cast(f, fb, to);
+			return;
+		}
+	}
 	if (bf->kind == TYPELDOUBLE || bt->kind == TYPELDOUBLE) {
 		if (bf->kind == TYPELDOUBLE && bt->kind == TYPELDOUBLE)
 			return;
@@ -1017,14 +1191,16 @@ gen_addr(struct func *f, struct expr *e)
 		}
 		break;
 	case EXPRCALL:
-		if (e->type->kind == TYPESTRUCT || e->type->kind == TYPEUNION) {
+		if (e->type->kind == TYPESTRUCT || e->type->kind == TYPEUNION ||
+		    e->type->kind == TYPECOMPLEX) {
 			gen_expr(f, e);
 			return;
 		}
 		break;
 	case EXPRASSIGN:
 	case EXPRCOND:
-		if (e->type->kind == TYPESTRUCT || e->type->kind == TYPEUNION) {
+		if (e->type->kind == TYPESTRUCT || e->type->kind == TYPEUNION ||
+		    e->type->kind == TYPECOMPLEX) {
 			gen_expr(f, e);
 			return;
 		}
@@ -1108,7 +1284,7 @@ assign_lvalue(struct func *f, struct expr *lhs, struct expr *rhs)
 	gen_expr(f, rhs);
 	pop(f, "%rdi");
 
-	if (t->kind == TYPESTRUCT || t->kind == TYPEUNION) {
+	if (t->kind == TYPESTRUCT || t->kind == TYPEUNION || t->kind == TYPECOMPLEX) {
 		emitf(f, "\tmov %%rax, %%rsi\n");
 		funccopy(f, (int)t->size);
 		emitf(f, "\tmov %%rdi, %%rax\n");
@@ -1120,7 +1296,8 @@ assign_lvalue(struct func *f, struct expr *lhs, struct expr *rhs)
 static void
 gen_arg(struct func *f, struct expr *arg)
 {
-	if (arg->type->kind == TYPESTRUCT || arg->type->kind == TYPEUNION) {
+	if (arg->type->kind == TYPESTRUCT || arg->type->kind == TYPEUNION ||
+	    arg->type->kind == TYPECOMPLEX) {
 		struct value *tmp = mkvalue(V_TEMP);
 		tmp->offset = alloc_stack(f, (int)arg->type->size, arg->type->align);
 		gen_expr(f, arg);
@@ -1161,6 +1338,16 @@ gen_expr(struct func *f, struct expr *e)
 		return;
 	case EXPRCONST:
 		t = basetype(e->type);
+		if (is_complex(t)) {
+			struct type *bt = t->base;
+			struct value *tmp = mkvalue(V_TEMP);
+			int off = (int)bt->size;
+			tmp->offset = alloc_stack(f, (int)t->size, t->align);
+			emitf(f, "\tlea %ld(%%rbp), %%rax\n", tmp->offset);
+			store_fp_const(f, bt, e->u.constant.c.re, "%rax", 0);
+			store_fp_const(f, bt, e->u.constant.c.im, "%rax", off);
+			return;
+		}
 		if (is_flonum(t)) {
 			if (is_longdouble(t)) {
 				long double ld = (long double)e->u.constant.f;
@@ -1209,6 +1396,41 @@ gen_expr(struct func *f, struct expr *e)
 			return;
 		case TSUB:
 			gen_expr(f, e->base);
+			if (is_complex(e->type)) {
+				struct type *bt = e->type->base;
+				int off = (int)bt->size;
+				struct value *tmp = mkvalue(V_TEMP);
+				tmp->offset = alloc_stack(f, (int)e->type->size, e->type->align);
+				emitf(f, "\tlea %ld(%%rbp), %%rdi\n", tmp->offset);
+				if (bt->kind == TYPELDOUBLE) {
+					emitf(f, "\tfldt (%%rax)\n");
+					emitf(f, "\tfchs\n");
+					emitf(f, "\tfstpt (%%rdi)\n");
+					emitf(f, "\tfldt %d(%%rax)\n", off);
+					emitf(f, "\tfchs\n");
+					emitf(f, "\tfstpt %d(%%rdi)\n", off);
+				} else if (bt->size == 4) {
+					emitf(f, "\tmovss (%%rax), %%xmm0\n");
+					emitf(f, "\txorps %%xmm1, %%xmm1\n");
+					emitf(f, "\tsubss %%xmm0, %%xmm1\n");
+					emitf(f, "\tmovss %%xmm1, (%%rdi)\n");
+					emitf(f, "\tmovss %d(%%rax), %%xmm0\n", off);
+					emitf(f, "\txorps %%xmm1, %%xmm1\n");
+					emitf(f, "\tsubss %%xmm0, %%xmm1\n");
+					emitf(f, "\tmovss %%xmm1, %d(%%rdi)\n", off);
+				} else {
+					emitf(f, "\tmovsd (%%rax), %%xmm0\n");
+					emitf(f, "\txorpd %%xmm1, %%xmm1\n");
+					emitf(f, "\tsubsd %%xmm0, %%xmm1\n");
+					emitf(f, "\tmovsd %%xmm1, (%%rdi)\n");
+					emitf(f, "\tmovsd %d(%%rax), %%xmm0\n", off);
+					emitf(f, "\txorpd %%xmm1, %%xmm1\n");
+					emitf(f, "\tsubsd %%xmm0, %%xmm1\n");
+					emitf(f, "\tmovsd %%xmm1, %d(%%rdi)\n", off);
+				}
+				emitf(f, "\tlea %ld(%%rbp), %%rax\n", tmp->offset);
+				return;
+			}
 			if (is_longdouble(e->type)) {
 				emitf(f, "\tfchs\n");
 			} else if (is_flonum(e->type)) {
@@ -1246,6 +1468,54 @@ gen_expr(struct func *f, struct expr *e)
 			gen_addr(f, e->base->base);
 		} else {
 			gen_addr(f, e->base);
+		}
+		if (is_complex(e->base->type)) {
+			struct type *ct = e->base->type;
+			struct type *cb = ct->base;
+			struct value *tmp = NULL;
+
+			emitf(f, "\tmov %%rax, %%r11\n");
+			if (e->u.incdec.post) {
+				tmp = mkvalue(V_TEMP);
+				tmp->offset = alloc_stack(f, (int)ct->size, ct->align);
+				emitf(f, "\tlea %ld(%%rbp), %%rdi\n", tmp->offset);
+				emitf(f, "\tmov %%r11, %%rsi\n");
+				funccopy(f, (int)ct->size);
+			}
+
+			if (cb->kind == TYPELDOUBLE) {
+				emitf(f, "\tfldt (%%r11)\n");
+				emitf(f, "\tfld1\n");
+				if (e->op == TINC)
+					emitf(f, "\tfaddp %%st, %%st(1)\n");
+				else
+					emitf(f, "\tfsubrp %%st, %%st(1)\n");
+				emitf(f, "\tfstpt (%%r11)\n");
+			} else if (cb->size == 4) {
+				emitf(f, "\tmovss (%%r11), %%xmm0\n");
+				emitf(f, "\tmov $0x3f800000, %%r10d\n");
+				emitf(f, "\tmovd %%r10d, %%xmm1\n");
+				if (e->op == TINC)
+					emitf(f, "\taddss %%xmm1, %%xmm0\n");
+				else
+					emitf(f, "\tsubss %%xmm1, %%xmm0\n");
+				emitf(f, "\tmovss %%xmm0, (%%r11)\n");
+			} else {
+				emitf(f, "\tmovsd (%%r11), %%xmm0\n");
+				emitf(f, "\tmov $0x3ff0000000000000, %%r10\n");
+				emitf(f, "\tmovq %%r10, %%xmm1\n");
+				if (e->op == TINC)
+					emitf(f, "\taddsd %%xmm1, %%xmm0\n");
+				else
+					emitf(f, "\tsubsd %%xmm1, %%xmm0\n");
+				emitf(f, "\tmovsd %%xmm0, (%%r11)\n");
+			}
+			if (e->u.incdec.post) {
+				emitf(f, "\tlea %ld(%%rbp), %%rax\n", tmp->offset);
+			} else {
+				emitf(f, "\tmov %%r11, %%rax\n");
+			}
+			return;
 		}
 		push(f);
 		load(f, e->base->type);
@@ -1350,6 +1620,276 @@ gen_expr(struct func *f, struct expr *e)
 
 			funclabel(f, b3);
 			return;
+		}
+		if (is_complex(e->u.binary.l->type)) {
+			struct type *ct = e->u.binary.l->type;
+			struct type *bt = ct->base;
+			int off = (int)bt->size;
+
+			gen_expr(f, e->u.binary.r);
+			push(f);
+			gen_expr(f, e->u.binary.l);
+			pop(f, "%rdi");
+
+			if (e->op == TEQL || e->op == TNEQ) {
+				if (bt->kind == TYPELDOUBLE) {
+					emitf(f, "\tfldt (%%rax)\n");
+					emitf(f, "\tfldt (%%rdi)\n");
+					emitf(f, "\tfucomip %%st(1), %%st\n");
+					emitf(f, "\tfstp %%st(0)\n");
+					emitf(f, "\tsete %%al\n\tsetnp %%dl\n\tand %%dl, %%al\n");
+					emitf(f, "\tfldt %d(%%rax)\n", off);
+					emitf(f, "\tfldt %d(%%rdi)\n", off);
+					emitf(f, "\tfucomip %%st(1), %%st\n");
+					emitf(f, "\tfstp %%st(0)\n");
+					emitf(f, "\tsete %%dl\n\tsetnp %%cl\n\tand %%cl, %%dl\n");
+					emitf(f, "\tand %%dl, %%al\n");
+				} else if (bt->size == 4) {
+					emitf(f, "\tmovss (%%rax), %%xmm0\n");
+					emitf(f, "\tmovss (%%rdi), %%xmm1\n");
+					emitf(f, "\tucomiss %%xmm1, %%xmm0\n");
+					emitf(f, "\tsete %%al\n\tsetnp %%dl\n\tand %%dl, %%al\n");
+					emitf(f, "\tmovss %d(%%rax), %%xmm0\n", off);
+					emitf(f, "\tmovss %d(%%rdi), %%xmm1\n", off);
+					emitf(f, "\tucomiss %%xmm1, %%xmm0\n");
+					emitf(f, "\tsete %%dl\n\tsetnp %%cl\n\tand %%cl, %%dl\n");
+					emitf(f, "\tand %%dl, %%al\n");
+				} else {
+					emitf(f, "\tmovsd (%%rax), %%xmm0\n");
+					emitf(f, "\tmovsd (%%rdi), %%xmm1\n");
+					emitf(f, "\tucomisd %%xmm1, %%xmm0\n");
+					emitf(f, "\tsete %%al\n\tsetnp %%dl\n\tand %%dl, %%al\n");
+					emitf(f, "\tmovsd %d(%%rax), %%xmm0\n", off);
+					emitf(f, "\tmovsd %d(%%rdi), %%xmm1\n", off);
+					emitf(f, "\tucomisd %%xmm1, %%xmm0\n");
+					emitf(f, "\tsete %%dl\n\tsetnp %%cl\n\tand %%cl, %%dl\n");
+					emitf(f, "\tand %%dl, %%al\n");
+				}
+				if (e->op == TNEQ)
+					emitf(f, "\txor $1, %%al\n");
+				emitf(f, "\tand $1, %%al\n\tmovzb %%al, %%eax\n");
+				return;
+			}
+
+			if (e->op == TADD || e->op == TSUB) {
+				struct value *tmp = mkvalue(V_TEMP);
+				const char *mov = bt->size == 4 ? "movss" : "movsd";
+				const char *op = e->op == TADD ? (bt->size == 4 ? "addss" : "addsd")
+					: (bt->size == 4 ? "subss" : "subsd");
+				tmp->offset = alloc_stack(f, (int)ct->size, ct->align);
+				emitf(f, "\tlea %ld(%%rbp), %%rsi\n", tmp->offset);
+				if (bt->kind == TYPELDOUBLE) {
+					emitf(f, "\tfldt (%%rdi)\n");
+					emitf(f, "\tfldt (%%rax)\n");
+					if (e->op == TADD)
+						emitf(f, "\tfaddp %%st, %%st(1)\n");
+					else
+						emitf(f, "\tfsubrp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt (%%rsi)\n");
+					emitf(f, "\tfldt %d(%%rdi)\n", off);
+					emitf(f, "\tfldt %d(%%rax)\n", off);
+					if (e->op == TADD)
+						emitf(f, "\tfaddp %%st, %%st(1)\n");
+					else
+						emitf(f, "\tfsubrp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %d(%%rsi)\n", off);
+				} else {
+					emitf(f, "\t%s (%%rax), %%xmm0\n", mov);
+					emitf(f, "\t%s (%%rdi), %%xmm1\n", mov);
+					emitf(f, "\t%s %%xmm1, %%xmm0\n", op);
+					emitf(f, "\t%s %%xmm0, (%%rsi)\n", mov);
+					emitf(f, "\t%s %d(%%rax), %%xmm0\n", mov, off);
+					emitf(f, "\t%s %d(%%rdi), %%xmm1\n", mov, off);
+					emitf(f, "\t%s %%xmm1, %%xmm0\n", op);
+					emitf(f, "\t%s %%xmm0, %d(%%rsi)\n", mov, off);
+				}
+				emitf(f, "\tlea %ld(%%rbp), %%rax\n", tmp->offset);
+				return;
+			}
+
+			if (e->op == TMUL) {
+				struct value *tmp = mkvalue(V_TEMP);
+				tmp->offset = alloc_stack(f, (int)ct->size, ct->align);
+				emitf(f, "\tlea %ld(%%rbp), %%rsi\n", tmp->offset);
+				if (bt->kind == TYPELDOUBLE) {
+					long t1 = alloc_stack(f, 16, 16);
+					long t2 = alloc_stack(f, 16, 16);
+					emitf(f, "\tfldt (%%rax)\n");
+					emitf(f, "\tfldt (%%rdi)\n");
+					emitf(f, "\tfmulp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %ld(%%rbp)\n", t1);
+					emitf(f, "\tfldt %d(%%rax)\n", off);
+					emitf(f, "\tfldt %d(%%rdi)\n", off);
+					emitf(f, "\tfmulp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %ld(%%rbp)\n", t2);
+					emitf(f, "\tfldt %ld(%%rbp)\n", t1);
+					emitf(f, "\tfldt %ld(%%rbp)\n", t2);
+					emitf(f, "\tfsubp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt (%%rsi)\n");
+
+					emitf(f, "\tfldt (%%rax)\n");
+					emitf(f, "\tfldt %d(%%rdi)\n", off);
+					emitf(f, "\tfmulp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %ld(%%rbp)\n", t1);
+					emitf(f, "\tfldt %d(%%rax)\n", off);
+					emitf(f, "\tfldt (%%rdi)\n");
+					emitf(f, "\tfmulp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %ld(%%rbp)\n", t2);
+					emitf(f, "\tfldt %ld(%%rbp)\n", t1);
+					emitf(f, "\tfldt %ld(%%rbp)\n", t2);
+					emitf(f, "\tfaddp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %d(%%rsi)\n", off);
+				} else if (bt->size == 4) {
+					emitf(f, "\tmovss (%%rax), %%xmm0\n");
+					emitf(f, "\tmovss %d(%%rax), %%xmm1\n", off);
+					emitf(f, "\tmovss (%%rdi), %%xmm2\n");
+					emitf(f, "\tmovss %d(%%rdi), %%xmm3\n", off);
+					emitf(f, "\tmovss %%xmm0, %%xmm4\n");
+					emitf(f, "\tmulss %%xmm2, %%xmm4\n");
+					emitf(f, "\tmovss %%xmm1, %%xmm5\n");
+					emitf(f, "\tmulss %%xmm3, %%xmm5\n");
+					emitf(f, "\tsubss %%xmm5, %%xmm4\n");
+					emitf(f, "\tmovss %%xmm4, (%%rsi)\n");
+					emitf(f, "\tmovss %%xmm0, %%xmm4\n");
+					emitf(f, "\tmulss %%xmm3, %%xmm4\n");
+					emitf(f, "\tmovss %%xmm1, %%xmm5\n");
+					emitf(f, "\tmulss %%xmm2, %%xmm5\n");
+					emitf(f, "\taddss %%xmm5, %%xmm4\n");
+					emitf(f, "\tmovss %%xmm4, %d(%%rsi)\n", off);
+				} else {
+					emitf(f, "\tmovsd (%%rax), %%xmm0\n");
+					emitf(f, "\tmovsd %d(%%rax), %%xmm1\n", off);
+					emitf(f, "\tmovsd (%%rdi), %%xmm2\n");
+					emitf(f, "\tmovsd %d(%%rdi), %%xmm3\n", off);
+					emitf(f, "\tmovsd %%xmm0, %%xmm4\n");
+					emitf(f, "\tmulsd %%xmm2, %%xmm4\n");
+					emitf(f, "\tmovsd %%xmm1, %%xmm5\n");
+					emitf(f, "\tmulsd %%xmm3, %%xmm5\n");
+					emitf(f, "\tsubsd %%xmm5, %%xmm4\n");
+					emitf(f, "\tmovsd %%xmm4, (%%rsi)\n");
+					emitf(f, "\tmovsd %%xmm0, %%xmm4\n");
+					emitf(f, "\tmulsd %%xmm3, %%xmm4\n");
+					emitf(f, "\tmovsd %%xmm1, %%xmm5\n");
+					emitf(f, "\tmulsd %%xmm2, %%xmm5\n");
+					emitf(f, "\taddsd %%xmm5, %%xmm4\n");
+					emitf(f, "\tmovsd %%xmm4, %d(%%rsi)\n", off);
+				}
+				emitf(f, "\tlea %ld(%%rbp), %%rax\n", tmp->offset);
+				return;
+			}
+
+			if (e->op == TDIV) {
+				struct value *tmp = mkvalue(V_TEMP);
+				tmp->offset = alloc_stack(f, (int)ct->size, ct->align);
+				emitf(f, "\tlea %ld(%%rbp), %%rsi\n", tmp->offset);
+				if (bt->kind == TYPELDOUBLE) {
+					long t1 = alloc_stack(f, 16, 16);
+					long t2 = alloc_stack(f, 16, 16);
+					/* denom = c*c + d*d */
+					emitf(f, "\tfldt (%%rdi)\n");
+					emitf(f, "\tfldt (%%rdi)\n");
+					emitf(f, "\tfmulp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %ld(%%rbp)\n", t1);
+					emitf(f, "\tfldt %d(%%rdi)\n", off);
+					emitf(f, "\tfldt %d(%%rdi)\n", off);
+					emitf(f, "\tfmulp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %ld(%%rbp)\n", t2);
+					emitf(f, "\tfldt %ld(%%rbp)\n", t1);
+					emitf(f, "\tfldt %ld(%%rbp)\n", t2);
+					emitf(f, "\tfaddp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %ld(%%rbp)\n", t1);
+
+					/* num_real = a*c + b*d */
+					emitf(f, "\tfldt (%%rax)\n");
+					emitf(f, "\tfldt (%%rdi)\n");
+					emitf(f, "\tfmulp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %ld(%%rbp)\n", t2);
+					emitf(f, "\tfldt %d(%%rax)\n", off);
+					emitf(f, "\tfldt %d(%%rdi)\n", off);
+					emitf(f, "\tfmulp %%st, %%st(1)\n");
+					emitf(f, "\tfldt %ld(%%rbp)\n", t2);
+					emitf(f, "\tfaddp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %ld(%%rbp)\n", t2);
+
+					emitf(f, "\tfldt %ld(%%rbp)\n", t2);
+					emitf(f, "\tfldt %ld(%%rbp)\n", t1);
+					emitf(f, "\tfdivrp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt (%%rsi)\n");
+
+					/* num_imag = b*c - a*d */
+					emitf(f, "\tfldt %d(%%rax)\n", off);
+					emitf(f, "\tfldt (%%rdi)\n");
+					emitf(f, "\tfmulp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %ld(%%rbp)\n", t2);
+					emitf(f, "\tfldt (%%rax)\n");
+					emitf(f, "\tfldt %d(%%rdi)\n", off);
+					emitf(f, "\tfmulp %%st, %%st(1)\n");
+					emitf(f, "\tfldt %ld(%%rbp)\n", t2);
+					emitf(f, "\tfsubrp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %ld(%%rbp)\n", t2);
+
+					emitf(f, "\tfldt %ld(%%rbp)\n", t2);
+					emitf(f, "\tfldt %ld(%%rbp)\n", t1);
+					emitf(f, "\tfdivrp %%st, %%st(1)\n");
+					emitf(f, "\tfstpt %d(%%rsi)\n", off);
+				} else if (bt->size == 4) {
+					emitf(f, "\tmovss (%%rax), %%xmm0\n");
+					emitf(f, "\tmovss %d(%%rax), %%xmm1\n", off);
+					emitf(f, "\tmovss (%%rdi), %%xmm2\n");
+					emitf(f, "\tmovss %d(%%rdi), %%xmm3\n", off);
+					emitf(f, "\tmovss %%xmm2, %%xmm4\n");
+					emitf(f, "\tmulss %%xmm2, %%xmm4\n");
+					emitf(f, "\tmovss %%xmm3, %%xmm5\n");
+					emitf(f, "\tmulss %%xmm3, %%xmm5\n");
+					emitf(f, "\taddss %%xmm5, %%xmm4\n");
+
+					emitf(f, "\tmovss %%xmm0, %%xmm5\n");
+					emitf(f, "\tmulss %%xmm2, %%xmm5\n");
+					emitf(f, "\tmovss %%xmm1, %%xmm6\n");
+					emitf(f, "\tmulss %%xmm3, %%xmm6\n");
+					emitf(f, "\taddss %%xmm6, %%xmm5\n");
+					emitf(f, "\tdivss %%xmm4, %%xmm5\n");
+					emitf(f, "\tmovss %%xmm5, (%%rsi)\n");
+
+					emitf(f, "\tmovss %%xmm1, %%xmm5\n");
+					emitf(f, "\tmulss %%xmm2, %%xmm5\n");
+					emitf(f, "\tmovss %%xmm0, %%xmm6\n");
+					emitf(f, "\tmulss %%xmm3, %%xmm6\n");
+					emitf(f, "\tsubss %%xmm6, %%xmm5\n");
+					emitf(f, "\tdivss %%xmm4, %%xmm5\n");
+					emitf(f, "\tmovss %%xmm5, %d(%%rsi)\n", off);
+				} else {
+					emitf(f, "\tmovsd (%%rax), %%xmm0\n");
+					emitf(f, "\tmovsd %d(%%rax), %%xmm1\n", off);
+					emitf(f, "\tmovsd (%%rdi), %%xmm2\n");
+					emitf(f, "\tmovsd %d(%%rdi), %%xmm3\n", off);
+					emitf(f, "\tmovsd %%xmm2, %%xmm4\n");
+					emitf(f, "\tmulsd %%xmm2, %%xmm4\n");
+					emitf(f, "\tmovsd %%xmm3, %%xmm5\n");
+					emitf(f, "\tmulsd %%xmm3, %%xmm5\n");
+					emitf(f, "\taddsd %%xmm5, %%xmm4\n");
+
+					emitf(f, "\tmovsd %%xmm0, %%xmm5\n");
+					emitf(f, "\tmulsd %%xmm2, %%xmm5\n");
+					emitf(f, "\tmovsd %%xmm1, %%xmm6\n");
+					emitf(f, "\tmulsd %%xmm3, %%xmm6\n");
+					emitf(f, "\taddsd %%xmm6, %%xmm5\n");
+					emitf(f, "\tdivsd %%xmm4, %%xmm5\n");
+					emitf(f, "\tmovsd %%xmm5, (%%rsi)\n");
+
+					emitf(f, "\tmovsd %%xmm1, %%xmm5\n");
+					emitf(f, "\tmulsd %%xmm2, %%xmm5\n");
+					emitf(f, "\tmovsd %%xmm0, %%xmm6\n");
+					emitf(f, "\tmulsd %%xmm3, %%xmm6\n");
+					emitf(f, "\tsubsd %%xmm6, %%xmm5\n");
+					emitf(f, "\tdivsd %%xmm4, %%xmm5\n");
+					emitf(f, "\tmovsd %%xmm5, %d(%%rsi)\n", off);
+				}
+				emitf(f, "\tlea %ld(%%rbp), %%rax\n", tmp->offset);
+				return;
+			}
+
+			fatal("unhandled complex binary op");
 		}
 		if (is_longdouble(e->u.binary.l->type)) {
 			gen_expr(f, e->u.binary.r);
@@ -1567,7 +2107,8 @@ gen_expr(struct func *f, struct expr *e)
 			int stack_bytes;
 
 			isvararg = e->base->type->base->u.func.isvararg;
-			retbuf = e->type->kind == TYPESTRUCT || e->type->kind == TYPEUNION;
+			retbuf = e->type->kind == TYPESTRUCT || e->type->kind == TYPEUNION ||
+			    e->type->kind == TYPECOMPLEX;
 
 			if (spill_depth) {
 				spill_off = alloc_stack(f, spill_depth * 8, 8);
@@ -1902,6 +2443,37 @@ emit_data_item(struct expr *expr, unsigned long long size)
 		printf(" %c %llu", expr->op == TADD ? '+' : '-', expr->u.binary.r->u.constant.u);
 		break;
 	case EXPRCONST:
+		if (expr->type->kind == TYPECOMPLEX) {
+			struct type *bt = expr->type->base;
+			long double re = expr->u.constant.c.re;
+			long double im = expr->u.constant.c.im;
+			if (bt->kind == TYPELDOUBLE) {
+				unsigned char bytes[16];
+				memcpy(bytes, &re, sizeof(bytes));
+				for (size_t i = 0; i < 16; ++i)
+					printf(".byte %u\n", (unsigned)bytes[i]);
+				memcpy(bytes, &im, sizeof(bytes));
+				for (size_t i = 0; i < 16; ++i)
+					printf(".byte %u\n", (unsigned)bytes[i]);
+				break;
+			}
+			if (bt->size == 4) {
+				union { float f; unsigned u; } c32;
+				c32.f = (float)re;
+				emit_data_value(4, "%u", c32.u);
+				printf("\n");
+				c32.f = (float)im;
+				emit_data_value(4, "%u", c32.u);
+			} else {
+				union { double f; unsigned long long u; } c64;
+				c64.f = (double)re;
+				emit_data_value(8, "%llu", c64.u);
+				printf("\n");
+				c64.f = (double)im;
+				emit_data_value(8, "%llu", c64.u);
+			}
+			break;
+		}
 		if (expr->type->kind == TYPELDOUBLE) {
 			long double ld = (long double)expr->u.constant.f;
 			unsigned char bytes[16];
@@ -2156,7 +2728,8 @@ funcinit(struct func *f, struct decl *d, struct init *init, bool hasinit)
 			emitf(f, "\tadd $%llu, %%rdi\n", init->start);
 		if (init->bits.before || init->bits.after) {
 			store_bitfield(f, expr->type, init->bits);
-		} else if (expr->type->kind == TYPESTRUCT || expr->type->kind == TYPEUNION) {
+		} else if (expr->type->kind == TYPESTRUCT || expr->type->kind == TYPEUNION ||
+		    expr->type->kind == TYPECOMPLEX) {
 			emitf(f, "\tmov %%rax, %%rsi\n");
 			funccopy(f, (int)expr->type->size);
 		} else {
@@ -2198,7 +2771,8 @@ funcinit(struct func *f, struct decl *d, struct init *init, bool hasinit)
 		emitf(f, "\tlea %ld(%%rbp), %%rdi\n", d->value->offset + init->start);
 		if (init->bits.before || init->bits.after) {
 			store_bitfield(f, expr->type, init->bits);
-		} else if (expr->type->kind == TYPESTRUCT || expr->type->kind == TYPEUNION) {
+		} else if (expr->type->kind == TYPESTRUCT || expr->type->kind == TYPEUNION ||
+		    expr->type->kind == TYPECOMPLEX) {
 			emitf(f, "\tmov %%rax, %%rsi\n");
 			funccopy(f, (int)expr->type->size);
 		} else {
@@ -2249,7 +2823,8 @@ emitfunc(struct func *f, bool global)
 		printf("\tmovdqu %%xmm7, %ld(%%rbp)\n", off + 160);
 	}
 
-	if (f->type->base->kind == TYPESTRUCT || f->type->base->kind == TYPEUNION) {
+	if (f->type->base->kind == TYPESTRUCT || f->type->base->kind == TYPEUNION ||
+	    f->type->base->kind == TYPECOMPLEX) {
 		printf("\tmov %%rdi, %ld(%%rbp)\n", f->retbuf_offset);
 		gp = 1;
 	}
@@ -2326,7 +2901,8 @@ emitfunc(struct func *f, bool global)
 	}
 
 	/* implicit return for fallthrough */
-	if (f->type->base->kind == TYPESTRUCT || f->type->base->kind == TYPEUNION) {
+	if (f->type->base->kind == TYPESTRUCT || f->type->base->kind == TYPEUNION ||
+	    f->type->base->kind == TYPECOMPLEX) {
 		printf("\tmov %ld(%%rbp), %%rax\n", f->retbuf_offset);
 	} else if (is_longdouble(f->type->base)) {
 		printf("\tfldz\n");

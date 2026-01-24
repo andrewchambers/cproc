@@ -250,6 +250,24 @@ commonreal(struct expr **e1, struct expr **e2)
 	return t;
 }
 
+static struct type *
+commonarith(struct expr **e1, struct expr **e2)
+{
+	struct type *t1, *t2, *t;
+
+	t1 = (*e1)->type;
+	t2 = (*e2)->type;
+	if ((t1->prop & PROPCOMPLEX) || (t2->prop & PROPCOMPLEX)) {
+		struct type *b1 = t1->kind == TYPECOMPLEX ? t1->base : t1;
+		struct type *b2 = t2->kind == TYPECOMPLEX ? t2->base : t2;
+		t = typecomplex(typecommonreal(b1, bitfieldwidth(*e1), b2, bitfieldwidth(*e2)));
+		*e1 = exprconvert(*e1, t);
+		*e2 = exprconvert(*e2, t);
+		return t;
+	}
+	return commonreal(e1, e2);
+}
+
 static struct expr *
 mkbinaryexpr(struct location *loc, enum tokenkind op, struct expr *l, struct expr *r)
 {
@@ -272,7 +290,7 @@ mkbinaryexpr(struct location *loc, enum tokenkind op, struct expr *l, struct exp
 	case TNEQ:
 		t = &typeint;
 		if (lp & PROPARITH && rp & PROPARITH) {
-			commonreal(&l, &r);
+			commonarith(&l, &r);
 			break;
 		}
 		if (l->type->kind != TYPEPOINTER)
@@ -313,11 +331,13 @@ mkbinaryexpr(struct location *loc, enum tokenkind op, struct expr *l, struct exp
 	case TBOR:
 	case TXOR:
 	case TBAND:
+		if ((lp & PROPCOMPLEX) || (rp & PROPCOMPLEX))
+			error(loc, "operands to '%s' operator must be integer", tokstr[op]);
 		t = commonreal(&l, &r);
 		break;
 	case TADD:
 		if (lp & PROPARITH && rp & PROPARITH) {
-			t = commonreal(&l, &r);
+			t = commonarith(&l, &r);
 			break;
 		}
 		if (r->type->kind == TYPEPOINTER)
@@ -331,7 +351,7 @@ mkbinaryexpr(struct location *loc, enum tokenkind op, struct expr *l, struct exp
 		break;
 	case TSUB:
 		if (lp & PROPARITH && rp & PROPARITH) {
-			t = commonreal(&l, &r);
+			t = commonarith(&l, &r);
 			break;
 		}
 		if (l->type->kind != TYPEPOINTER || !(rp & PROPINT) && r->type->kind != TYPEPOINTER)
@@ -360,7 +380,7 @@ mkbinaryexpr(struct location *loc, enum tokenkind op, struct expr *l, struct exp
 	case TDIV:
 		if (!(lp & PROPARITH) || !(rp & PROPARITH))
 			error(loc, "operands to '%s' operator must be arithmetic", tokstr[op]);
-		t = commonreal(&l, &r);
+		t = commonarith(&l, &r);
 		break;
 	case TSHL:
 	case TSHR:
@@ -694,17 +714,35 @@ primaryexpr(struct scope *s)
 		}
 		if (strpbrk(tok.lit, base == 16 ? ".pP" : ".eE")) {
 			/* floating constant */
+			bool imag = false;
+			size_t len;
+			struct type *baseflt = &typedouble;
+			long double val;
 			e->u.constant.f = strtold(tok.lit, &end);
 			if (end == tok.lit)
 				error(&tok.loc, "invalid floating constant '%s'", tok.lit);
-			if (!end[0])
-				e->type = &typedouble;
-			else if (tolower(end[0]) == 'f' && !end[1])
-				e->type = &typefloat;
-			else if (tolower(end[0]) == 'l' && !end[1])
-				e->type = &typeldouble;
-			else
+			val = e->u.constant.f;
+			len = strlen(end);
+			if (len && (tolower(end[len - 1]) == 'i' || tolower(end[len - 1]) == 'j')) {
+				imag = true;
+				len--;
+			}
+			if (!len) {
+				baseflt = &typedouble;
+			} else if (len == 1 && tolower(end[0]) == 'f') {
+				baseflt = &typefloat;
+			} else if (len == 1 && tolower(end[0]) == 'l') {
+				baseflt = &typeldouble;
+			} else {
 				error(&tok.loc, "invalid floating constant suffix '%s'", end);
+			}
+			if (imag) {
+				e->type = typecomplex(baseflt);
+				e->u.constant.c.re = 0;
+				e->u.constant.c.im = val;
+			} else {
+				e->type = baseflt;
+			}
 		} else {
 			src = tok.lit;
 			if (base == 2)
@@ -713,7 +751,29 @@ primaryexpr(struct scope *s)
 			e->u.constant.u = strtoull(src, &end, base);
 			if (end == src)
 				error(&tok.loc, "invalid integer constant '%s'", tok.lit);
-			e->type = inttype(e->u.constant.u, base == 10, end);
+			{
+				bool imag = false;
+				size_t len = strlen(end);
+				struct type *baseflt = &typedouble;
+				unsigned long long val = e->u.constant.u;
+				if (len && (tolower(end[len - 1]) == 'i' || tolower(end[len - 1]) == 'j')) {
+					imag = true;
+					len--;
+				}
+				if (imag) {
+					if (len == 1 && tolower(end[0]) == 'f')
+						baseflt = &typefloat;
+					else if (len == 1 && tolower(end[0]) == 'l')
+						baseflt = &typeldouble;
+					else if (len != 0)
+						error(&tok.loc, "invalid integer constant suffix '%s'", end);
+					e->type = typecomplex(baseflt);
+					e->u.constant.c.re = 0;
+					e->u.constant.c.im = (long double)val;
+				} else {
+					e->type = inttype(e->u.constant.u, base == 10, end);
+				}
+			}
 		}
 		next();
 		break;
@@ -1069,7 +1129,13 @@ unaryexpr(struct scope *s)
 		e = castexpr(s);
 		if (!(e->type->prop & PROPSCALAR))
 			error(&tok.loc, "operator '!' must have scalar operand");
-		e = mkbinaryexpr(&tok.loc, TEQL, e, mkconstexpr(&typeint, 0));
+		if (e->type->prop & PROPCOMPLEX) {
+			struct expr *u = mkexpr(EXPRUNARY, &typeint, e);
+			u->op = TLNOT;
+			e = u;
+		} else {
+			e = mkbinaryexpr(&tok.loc, TEQL, e, mkconstexpr(&typeint, 0));
+		}
 		break;
 	case TSIZEOF:
 	case TALIGNOF:
@@ -1236,7 +1302,7 @@ condexpr(struct scope *s)
 	if (lt == rt) {
 		t = lt;
 	} else if (lt->prop & PROPARITH && rt->prop & PROPARITH) {
-		t = commonreal(&l, &r);
+		t = commonarith(&l, &r);
 	} else if (lt == &typevoid && rt == &typevoid) {
 		t = &typevoid;
 	} else {

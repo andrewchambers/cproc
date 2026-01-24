@@ -9,13 +9,35 @@ enum {
 	S = 2<<8
 };
 
+static unsigned long long
+consttruth(struct expr *e)
+{
+	if (e->type->prop & PROPCOMPLEX)
+		return e->u.constant.c.re != 0 || e->u.constant.c.im != 0;
+	if (e->type->prop & PROPFLOAT)
+		return e->u.constant.f != 0;
+	return e->u.constant.u != 0;
+}
+
 static void
 cast(struct expr *expr)
 {
 	unsigned size;
 	unsigned long long m;
+	struct type *base;
 
 	size = expr->type->size;
+	if (expr->type->prop & PROPCOMPLEX) {
+		base = expr->type->base;
+		if (base->size == 4) {
+			expr->u.constant.c.re = (float)expr->u.constant.c.re;
+			expr->u.constant.c.im = (float)expr->u.constant.c.im;
+		} else if (base->size == 8) {
+			expr->u.constant.c.re = (double)expr->u.constant.c.re;
+			expr->u.constant.c.im = (double)expr->u.constant.c.im;
+		}
+		return;
+	}
 	if (expr->type->prop & PROPFLOAT) {
 		if (size == 4)
 			expr->u.constant.f = (float)expr->u.constant.f;
@@ -34,6 +56,18 @@ static void
 unary(struct expr *expr, enum tokenkind op, struct expr *l)
 {
 	expr->kind = EXPRCONST;
+	if (l->type->prop & PROPCOMPLEX) {
+		switch (op) {
+		case TSUB:
+			expr->u.constant.c.re = -l->u.constant.c.re;
+			expr->u.constant.c.im = -l->u.constant.c.im;
+			break;
+		default:
+			fatal("internal error; unknown unary expression");
+		}
+		cast(expr);
+		return;
+	}
 	if (l->type->prop & PROPFLOAT)
 		op |= F;
 	switch (op) {
@@ -49,6 +83,36 @@ static void
 binary(struct expr *expr, enum tokenkind op, struct expr *l, struct expr *r)
 {
 	expr->kind = EXPRCONST;
+	if (expr->type->prop & PROPCOMPLEX) {
+		long double ar = l->u.constant.c.re;
+		long double ai = l->u.constant.c.im;
+		long double br = r->u.constant.c.re;
+		long double bi = r->u.constant.c.im;
+		switch (op) {
+		case TADD:
+			expr->u.constant.c.re = ar + br;
+			expr->u.constant.c.im = ai + bi;
+			break;
+		case TSUB:
+			expr->u.constant.c.re = ar - br;
+			expr->u.constant.c.im = ai - bi;
+			break;
+		case TMUL:
+			expr->u.constant.c.re = ar * br - ai * bi;
+			expr->u.constant.c.im = ar * bi + ai * br;
+			break;
+		case TDIV: {
+			long double denom = br * br + bi * bi;
+			expr->u.constant.c.re = (ar * br + ai * bi) / denom;
+			expr->u.constant.c.im = (ai * br - ar * bi) / denom;
+			break;
+		}
+		default:
+			fatal("internal error; unknown complex binary expression");
+		}
+		cast(expr);
+		return;
+	}
 	if (l->type->prop & PROPFLOAT)
 		op |= F;
 	else if (l->type->prop & PROPINT && l->type->u.basic.issigned)
@@ -156,7 +220,36 @@ eval(struct expr *expr)
 		l = eval(expr->base);
 		if (l->kind == EXPRCONST) {
 			expr->kind = EXPRCONST;
-			if (l->type->prop & PROPINT && t->prop & PROPFLOAT) {
+			if (t->prop & PROPCOMPLEX) {
+				if (l->type->prop & PROPCOMPLEX) {
+					expr->u.constant.c = l->u.constant.c;
+				} else if (l->type->prop & PROPFLOAT) {
+					expr->u.constant.c.re = l->u.constant.f;
+					expr->u.constant.c.im = 0;
+				} else if (l->type->prop & PROPINT) {
+					expr->u.constant.c.re = l->type->u.basic.issigned ? l->u.constant.i : l->u.constant.u;
+					expr->u.constant.c.im = 0;
+				}
+			} else if (l->type->prop & PROPCOMPLEX) {
+				long double re = l->u.constant.c.re;
+				if (t->kind == TYPEBOOL) {
+					expr->u.constant.u = (l->u.constant.c.re != 0 || l->u.constant.c.im != 0);
+				} else if (t->prop & PROPFLOAT) {
+					expr->u.constant.f = re;
+				} else if (t->prop & PROPINT) {
+					if (t->u.basic.issigned) {
+						if (re < -0x1p63 || re >= 0x1p63)
+							error(&tok.loc, "integer part of complex constant %Lg cannot be represented as signed integer", re);
+						expr->u.constant.i = re;
+					} else {
+						if (re < 0.0 || re >= 0x1p64)
+							error(&tok.loc, "integer part of complex constant %Lg cannot be represented as unsigned integer", re);
+						expr->u.constant.u = re;
+					}
+				} else {
+					expr->u.constant = l->u.constant;
+				}
+			} else if (l->type->prop & PROPINT && t->prop & PROPFLOAT) {
 				if (l->type->u.basic.issigned)
 					expr->u.constant.f = l->u.constant.i;
 				else
@@ -211,11 +304,25 @@ eval(struct expr *expr)
 		case TLOR:
 			if (l->kind != EXPRCONST)
 				break;
-			return l->u.constant.u ? l : r;
+			return consttruth(l) ? l : r;
 		case TLAND:
 			if (l->kind != EXPRCONST)
 				break;
-			return l->u.constant.u ? r : l;
+			return consttruth(l) ? r : l;
+		case TEQL:
+		case TNEQ:
+			if (l->kind != EXPRCONST || r->kind != EXPRCONST)
+				break;
+			if (l->type->prop & PROPCOMPLEX || r->type->prop & PROPCOMPLEX) {
+				int eq = l->u.constant.c.re == r->u.constant.c.re &&
+					 l->u.constant.c.im == r->u.constant.c.im;
+				expr->kind = EXPRCONST;
+				expr->u.constant.u = expr->op == TEQL ? eq : !eq;
+				cast(expr);
+				break;
+			}
+			binary(expr, expr->op, l, r);
+			break;
 		default:
 			if (l->kind != EXPRCONST || r->kind != EXPRCONST)
 				break;

@@ -162,6 +162,7 @@ enum typekind {
 	TYPEFLOAT,
 	TYPEDOUBLE,
 	TYPELDOUBLE,
+	TYPECOMPLEX,
 	TYPEPOINTER,
 	TYPEARRAY,
 	TYPEFUNC,
@@ -179,7 +180,8 @@ enum typeprop {
 	PROPARITH   = 1<<3,
 	PROPSCALAR  = 1<<4,
 	PROPFLOAT   = 1<<5,
-	PROPVM      = 1<<6  /* variably-modified type */
+	PROPCOMPLEX = 1<<6,
+	PROPVM      = 1<<7  /* variably-modified type */
 };
 
 struct bitfield {
@@ -354,6 +356,9 @@ struct expr {
 			unsigned long long u;
 			long long i;
 			long double f;
+			struct {
+				long double re, im;
+			} c;
 		} constant;
 		struct stringlit string;
 		struct {
@@ -440,6 +445,7 @@ struct type *typecomposite(struct type *, struct type *);
 struct type *typeunqual(struct type *, enum typequal *);
 struct type *typecommonreal(struct type *, unsigned, struct type *, unsigned);
 struct type *typepromote(struct type *, unsigned);
+struct type *typecomplex(struct type *);
 struct type *typeadjust(struct type *, enum typequal *);
 enum typeprop typeprop(struct type *);
 struct member *typemember(struct type *, const char *, unsigned long long *);
@@ -453,6 +459,7 @@ extern struct type typeint, typeuint;
 extern struct type typelong, typeulong;
 extern struct type typellong, typeullong;
 extern struct type typefloat, typedouble, typeldouble;
+extern struct type typecfloat, typecdouble, typecldouble;
 extern struct type typenullptr;
 extern struct type *typeadjvalist;
 

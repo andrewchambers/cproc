@@ -147,6 +147,10 @@ focus(struct initparser *p)
 		if (p->sub->type->incomplete)
 			p->sub->type->size = t->size;
 		break;
+	case TYPECOMPLEX:
+		t = p->sub->type->base;
+		p->sub->u.idx = 0;
+		break;
 	case TYPESTRUCT:
 	case TYPEUNION:
 		p->sub->u.mem = p->sub->type->u.structunion.members;
@@ -175,6 +179,12 @@ advance(struct initparser *p)
 					break;
 				t->size += t->base->size;
 			}
+			subobj(p, t->base, p->sub->u.idx);
+			return;
+		case TYPECOMPLEX:
+			p->sub->u.idx += t->base->size;
+			if (p->sub->u.idx == t->size)
+				break;
 			subobj(p, t->base, p->sub->u.idx);
 			return;
 		case TYPESTRUCT:
@@ -226,9 +236,9 @@ parseinit(struct scope *s, struct type *t)
 				goto next;
 			}
 			if (p.cur == p.sub) {
-				if (p.cur->type->prop & PROPSCALAR)
+				if (p.cur->type->prop & PROPSCALAR && p.cur->type->kind != TYPECOMPLEX)
 					error(&tok.loc, "nested braces around scalar initializer");
-				assert(p.cur->type->kind == TYPEARRAY);
+				assert(p.cur->type->kind == TYPEARRAY || p.cur->type->kind == TYPECOMPLEX);
 				focus(&p);
 			}
 			p.cur = p.sub;
@@ -253,6 +263,12 @@ parseinit(struct scope *s, struct type *t)
 			case TYPEUNION:
 				if (typecompatible(expr->type, t))
 					goto add;
+				break;
+			case TYPECOMPLEX:
+				if (!p.cur) {
+					expr = exprassign(expr, t);
+					goto add;
+				}
 				break;
 			default:  /* scalar type */
 				assert(t->prop & PROPSCALAR);
