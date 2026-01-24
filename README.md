@@ -70,8 +70,9 @@ specified in `config.h`.
 
 - Digraph sequences ([6.4.6p3], will not be implemented).
 - Preprocessor ([#6]).
-- Generation of position independent code (i.e. shared libraries,
-  modules, PIEs).
+- Position-independent executables (PIEs) are not yet supported.
+
+Shared libraries can be built with `-shared` (which implies `-fPIC`).
 
 ## Mailing list
 

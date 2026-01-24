@@ -1,9 +1,12 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "util.h"
 #include "arg.h"
 #include "cc.h"
+
+bool pic;
 
 static void
 usage(void)
@@ -23,6 +26,14 @@ main(int argc, char *argv[])
 	case 'E':
 		pponly = true;
 		break;
+	case 'f':
+		if (strcmp(opt_, "fPIC") == 0 || strcmp(opt_, "fpic") == 0 ||
+		    strcmp(opt_, "fPIE") == 0 || strcmp(opt_, "fpie") == 0) {
+			pic = true;
+			done_ = 1;
+			break;
+		}
+		usage();
 	case 't':
 		target = EARGF(usage());
 		break;

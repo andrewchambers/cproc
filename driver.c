@@ -52,6 +52,7 @@ struct input {
 static struct {
 	bool nostdlib;
 	bool verbose;
+	bool shared;
 } flags;
 static struct stageinfo stages[] = {
 	[PREPROCESS] = {.name = "preprocess"},
@@ -78,7 +79,7 @@ usage(const char *fmt, ...)
 		va_end(ap);
 		fputc('\n', stderr);
 	}
-	fprintf(stderr, "usage: %s [-c|-S|-E] [-D name[=value]] [-U name] [-s] [-g] [-o output] input...\n", argv0);
+	fprintf(stderr, "usage: %s [-c|-S|-E] [-shared] [-D name[=value]] [-U name] [-s] [-g] [-o output] input...\n", argv0);
 	exit(2);
 }
 
@@ -302,15 +303,49 @@ buildexe(struct input *inputs, size_t ninputs, char *output)
 
 	arrayaddptr(&s->cmd, "-o");
 	arrayaddptr(&s->cmd, output);
-	if (!flags.nostdlib && startfiles[0])
-		arrayaddbuf(&s->cmd, startfiles, sizeof(startfiles));
+	if (!flags.nostdlib && LEN(startfiles)) {
+		for (i = 0; i < LEN(startfiles); ++i) {
+			const char *arg = startfiles[i];
+			if (strcmp(arg, "-l") == 0 && i + 1 < LEN(startfiles)) {
+				const char *lib = startfiles[++i];
+				if (flags.shared) {
+					if (strcmp(lib, ":crt1.o") == 0 || strcmp(lib, ":Scrt1.o") == 0)
+						continue;
+					if (strcmp(lib, ":crtbegin.o") == 0)
+						lib = ":crtbeginS.o";
+				}
+				arrayaddptr(&s->cmd, "-l");
+				arrayaddptr(&s->cmd, (char *)lib);
+				continue;
+			}
+			if (flags.shared && (strcmp(arg, ":crt1.o") == 0 || strcmp(arg, ":Scrt1.o") == 0))
+				continue;
+			arrayaddptr(&s->cmd, (char *)arg);
+		}
+	}
 	for (i = 0; i < ninputs; ++i) {
 		if (inputs[i].lib)
 			arrayaddptr(&s->cmd, "-l");
 		arrayaddptr(&s->cmd, inputs[i].name);
 	}
-	if (!flags.nostdlib && endfiles[0])
-		arrayaddbuf(&s->cmd, endfiles, sizeof(endfiles));
+	if (!flags.nostdlib && LEN(endfiles)) {
+		for (i = 0; i < LEN(endfiles); ++i) {
+			const char *arg = endfiles[i];
+			if (strcmp(arg, "-l") == 0 && i + 1 < LEN(endfiles)) {
+				const char *lib = endfiles[++i];
+				if (flags.shared && strcmp(lib, ":crtend.o") == 0)
+					lib = ":crtendS.o";
+				arrayaddptr(&s->cmd, "-l");
+				arrayaddptr(&s->cmd, (char *)lib);
+				continue;
+			}
+			if (flags.shared && strcmp(arg, ":crtend.o") == 0) {
+				arrayaddptr(&s->cmd, ":crtendS.o");
+				continue;
+			}
+			arrayaddptr(&s->cmd, (char *)arg);
+		}
+	}
 	arrayaddptr(&s->cmd, NULL);
 
 	ret = spawn(&pid, &s->cmd, NULL);
@@ -380,6 +415,47 @@ hasprefix(const char *str, const char *pfx)
 	return memcmp(str, pfx, strlen(pfx)) == 0;
 }
 
+static bool
+picflag(const char *arg, int *level, bool *pie)
+{
+	if (strcmp(arg, "-fPIC") == 0) {
+		*level = 2;
+		*pie = false;
+		return true;
+	}
+	if (strcmp(arg, "-fpic") == 0) {
+		*level = 1;
+		*pie = false;
+		return true;
+	}
+	if (strcmp(arg, "-fPIE") == 0) {
+		*level = 2;
+		*pie = true;
+		return true;
+	}
+	if (strcmp(arg, "-fpie") == 0) {
+		*level = 1;
+		*pie = true;
+		return true;
+	}
+	return false;
+}
+
+static void
+add_define(struct array *cmd, const char *name, int level)
+{
+	char buf[64];
+	int n = snprintf(buf, sizeof(buf), "%s=%d", name, level);
+	char *def;
+
+	if (n < 0 || (size_t)n >= sizeof(buf))
+		fatal("macro definition too long");
+	def = xmalloc((size_t)n + 1);
+	memcpy(def, buf, (size_t)n + 1);
+	arrayaddptr(cmd, "-D");
+	arrayaddptr(cmd, def);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -390,6 +466,9 @@ main(int argc, char *argv[])
 	struct array inputs = {0}, *cmd;
 	struct input *input;
 	size_t i;
+	int pic_level = 0;
+	int pie_level = 0;
+	const char *pic_arg = NULL;
 
 	argv0 = progname(argv[0], "cproc");
 
@@ -441,12 +520,38 @@ ignore:
 		}
 
 		/* TODO: use a binary search for these long parameters */
+		{
+			int level;
+			bool pie;
+
+			if (strcmp(arg, "-fno-pic") == 0 || strcmp(arg, "-fno-PIC") == 0 ||
+			    strcmp(arg, "-fno-pie") == 0 || strcmp(arg, "-fno-PIE") == 0) {
+				pic_level = 0;
+				pie_level = 0;
+				pic_arg = NULL;
+				continue;
+			}
+			if (picflag(arg, &level, &pie)) {
+				pic_level = level;
+				pie_level = pie ? level : 0;
+				pic_arg = arg;
+				continue;
+			}
+		}
 		if (strcmp(arg, "-nostdlib") == 0) {
 			flags.nostdlib = true;
 		} else if (strcmp(arg, "-nostdinc") == 0) {
 			arrayaddptr(&stages[PREPROCESS].cmd, arg);
 		} else if (strcmp(arg, "-static") == 0) {
 			arrayaddptr(&stages[LINK].cmd, arg);
+		} else if (strcmp(arg, "-shared") == 0) {
+			flags.shared = true;
+			arrayaddptr(&stages[LINK].cmd, arg);
+			if (!pic_level) {
+				pic_level = 2;
+				pie_level = 0;
+				pic_arg = "-fPIC";
+			}
 		} else if (strcmp(arg, "-include") == 0 || strcmp(arg, "-idirafter") == 0 || strcmp(arg, "-isystem") == 0 || strcmp(arg, "-iquote") == 0) {
 			if (!--argc)
 				usage(NULL);
@@ -573,6 +678,15 @@ ignore:
 		}
 	}
 
+	if (pic_level && pic_arg) {
+		arrayaddptr(&stages[COMPILE].cmd, (char *)pic_arg);
+		add_define(&stages[PREPROCESS].cmd, "__PIC__", pic_level);
+		add_define(&stages[PREPROCESS].cmd, "__pic__", pic_level);
+		if (pie_level) {
+			add_define(&stages[PREPROCESS].cmd, "__PIE__", pie_level);
+			add_define(&stages[PREPROCESS].cmd, "__pie__", pie_level);
+		}
+	}
 	for (i = 0; i < LEN(stages); ++i)
 		stages[i].cmdbase = stages[i].cmd.len;
 	if (inputs.len == 0)

@@ -1448,6 +1448,33 @@ cast(struct func *f, struct type *from, struct type *to)
 		emitf(f, "\t%s\n", cast_table[t1][t2]);
 }
 
+static bool
+needs_got(struct decl *d, struct value *v)
+{
+	return pic && d && d->linkage == LINKEXTERN && !v->thread;
+}
+
+static void
+emit_global_addr(struct func *f, struct decl *d, struct value *v)
+{
+	if (v->thread) {
+		emitf(f, "\tmov %%fs:0, %%rax\n");
+		if (v->id)
+			emitf(f, "\tadd $.L%u.%s@tpoff, %%rax\n", v->id, v->u.name);
+		else
+			emitf(f, "\tadd $%s@tpoff, %%rax\n", v->u.name);
+		return;
+	}
+	if (needs_got(d, v)) {
+		emitf(f, "\tmov %s@GOTPCREL(%%rip), %%rax\n", v->u.name);
+		return;
+	}
+	if (v->id)
+		emitf(f, "\tlea .L%u.%s(%%rip), %%rax\n", v->id, v->u.name);
+	else
+		emitf(f, "\tlea %s(%%rip), %%rax\n", v->u.name);
+}
+
 static void
 gen_addr(struct func *f, struct expr *e)
 {
@@ -1468,18 +1495,8 @@ gen_addr(struct func *f, struct expr *e)
 			emitf(f, "\tlea %ld(%%rbp), %%rax\n", v->offset);
 			return;
 		}
-	if (v->kind == V_GLOBAL) {
-			if (v->thread) {
-				emitf(f, "\tmov %%fs:0, %%rax\n");
-				if (v->id)
-					emitf(f, "\tadd $.L%u.%s@tpoff, %%rax\n", v->id, v->u.name);
-				else
-					emitf(f, "\tadd $%s@tpoff, %%rax\n", v->u.name);
-			} else if (v->id) {
-				emitf(f, "\tlea .L%u.%s(%%rip), %%rax\n", v->id, v->u.name);
-			} else {
-				emitf(f, "\tlea %s(%%rip), %%rax\n", v->u.name);
-			}
+		if (v->kind == V_GLOBAL) {
+			emit_global_addr(f, d, v);
 			return;
 		}
 		break;
@@ -1487,10 +1504,7 @@ gen_addr(struct func *f, struct expr *e)
 		d = stringdecl(e);
 		v = d->value;
 		if (v->kind == V_GLOBAL) {
-			if (v->id)
-				emitf(f, "\tlea .L%u.%s(%%rip), %%rax\n", v->id, v->u.name);
-			else
-				emitf(f, "\tlea %s(%%rip), %%rax\n", v->u.name);
+			emit_global_addr(f, d, v);
 			return;
 		}
 		break;
@@ -1504,10 +1518,7 @@ gen_addr(struct func *f, struct expr *e)
 			if (!d->value)
 				d->value = mkglobal(d);
 			if (d->value->kind == V_GLOBAL) {
-				if (d->value->id)
-					emitf(f, "\tlea .L%u.%s(%%rip), %%rax\n", d->value->id, d->value->u.name);
-				else
-					emitf(f, "\tlea %s(%%rip), %%rax\n", d->value->u.name);
+				emit_global_addr(f, d, d->value);
 				return;
 			}
 		} else {

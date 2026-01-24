@@ -431,6 +431,7 @@ enum ppflags {
 };
 
 extern enum ppflags ppflags;
+extern bool pic;
 
 void ppinit(void);
 
