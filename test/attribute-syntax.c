@@ -77,3 +77,8 @@ enum [[dummy]] e {
 [[dummy1,dummy2,,dummy3]];
 [[]];
 [[dummy1]] [[dummy2]];
+
+int main(void) {
+	f(0, 0);
+	return 0;
+}

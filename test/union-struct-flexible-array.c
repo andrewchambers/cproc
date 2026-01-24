@@ -8,6 +8,8 @@ union u {
 
 int x = sizeof(union u);
 
-int f(union u *u) {
-	return u->s.b[2] + u->storage[0];
+int main(void) {
+	union u u = {0};
+	u.s.a = 5;
+	return (x == 32 && u.s.a == 5) ? 0 : 1;
 }

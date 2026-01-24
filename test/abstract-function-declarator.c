@@ -14,3 +14,7 @@ void f4(int *);
 
 void f5(int((x)));
 void f5(int (*)(int));
+
+int main(void) {
+	return 0;
+}

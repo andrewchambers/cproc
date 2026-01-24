@@ -1,34 +1,32 @@
-int f1(int n, __builtin_va_list ap) {
-	return __builtin_va_arg(ap, int);
-}
-
-int f2(int n, ...) {
-	int r;
+int first(int n, ...) {
 	__builtin_va_list ap;
+	int v;
 
 	__builtin_va_start(ap, n);
-	r = f1(n, ap);
+	v = __builtin_va_arg(ap, int);
 	__builtin_va_end(ap);
-	return r;
+	return v;
 }
 
-void f3(int n, ...) {
+int sum3(int n, ...) {
 	__builtin_va_list ap;
+	int a;
+	int b;
+	int c;
 
 	__builtin_va_start(ap, n);
-	while (n) {
-		__builtin_va_arg(ap, int);
-		__builtin_va_arg(ap, float);
-		__builtin_va_arg(ap, char *);
-		--n;
-	}
+	a = __builtin_va_arg(ap, int);
+	b = __builtin_va_arg(ap, int);
+	c = __builtin_va_arg(ap, int);
 	__builtin_va_end(ap);
+	return n + a + b + c;
 }
 
-void f4(...) {
-	__builtin_va_list ap;
-	__builtin_va_start(ap);
-	__builtin_va_arg(ap, double);
-	__builtin_va_arg(ap, int);
-	__builtin_va_end(ap);
+int main(void) {
+	int ok = 1;
+
+	ok &= (first(0, 7) == 7);
+	ok &= (sum3(1, 2, 3, 4) == 10);
+
+	return ok ? 0 : 1;
 }

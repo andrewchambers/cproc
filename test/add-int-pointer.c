@@ -1,4 +1,5 @@
 int x[2];
-void f(void) {
-	1 + x;
+
+int main(void) {
+	return (1 + x == &x[1]) ? 0 : 1;
 }

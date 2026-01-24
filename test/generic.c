@@ -4,3 +4,7 @@ int x = _Generic(123,
 	int: 3,
 	int *: 4
 );
+
+int main(void) {
+	return x == 3 ? 0 : 1;
+}

@@ -34,3 +34,7 @@ static_assert(__builtin_types_compatible_p(typeof(A4), enum E4));
 static_assert(A4type1 == 1);
 static_assert(!__builtin_types_compatible_p(typeof(A4), enum E3));
 static_assert(A4type2 == 1);
+
+int main(void) {
+	return 0;
+}

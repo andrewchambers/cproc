@@ -1,2 +1,6 @@
 #define f(x) x - 2
-f()
+
+int main(void) {
+	int v = f();
+	return v == -2 ? 0 : 1;
+}

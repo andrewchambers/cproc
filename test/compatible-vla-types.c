@@ -15,3 +15,8 @@ void f2(void) {
 	static_assert(__builtin_types_compatible_p(int [2][n], int [1 + 1][n]));
 	static_assert(!__builtin_types_compatible_p(int [4][n], int [5][n]));
 }
+
+int main(void) {
+	f2();
+	return 0;
+}

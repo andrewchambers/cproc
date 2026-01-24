@@ -1,4 +1,6 @@
-typeof(nullptr) x = 0;
-static_assert(sizeof x == sizeof(char *));
-int *y = nullptr;
-bool z = nullptr;
+typedef __typeof__(nullptr) nullptr_t;
+static_assert(sizeof(nullptr_t) == sizeof(char *));
+
+int main(void) {
+	return ((void *)nullptr == 0) ? 0 : 1;
+}

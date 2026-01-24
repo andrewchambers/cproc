@@ -20,3 +20,7 @@ static_assert(!__builtin_types_compatible_p(void(int, ...), void(int)));
 static_assert(!__builtin_types_compatible_p(void(const char *), void(char *)));
 static_assert(!__builtin_types_compatible_p(void(char *), void(unsigned char *)));
 static_assert(!__builtin_types_compatible_p(void(int, float), void(int, double)));
+
+int main(void) {
+	return 0;
+}

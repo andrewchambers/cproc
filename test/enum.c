@@ -21,3 +21,8 @@ static_assert(A2type == 1);
 static_assert(__builtin_types_compatible_p(typeof(B2), int));
 static_assert(B2type == 1);
 static_assert(__builtin_types_compatible_p(enum E2, unsigned));
+
+int main(void) {
+	return !(A1 == 1 && B1 == -1 && A2 == 1 && B2 == 2 &&
+		A1type == 1 && B1type == 1 && A2type == 1 && B2type == 1);
+}

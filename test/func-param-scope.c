@@ -7,3 +7,7 @@ char (*f(enum {A = 2} *p, int (*a)[A], double (*b)[sizeof **a]))[A] {
 }
 static_assert(A == 1);
 static_assert(sizeof *f(0, 0, 0) == 1);
+
+int main(void) {
+	return 0;
+}

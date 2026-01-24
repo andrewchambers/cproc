@@ -3,6 +3,7 @@ int f(int x) {
 	l += x;
 	return x;
 }
+
 int main(void) {
 	int r = 0;
 	int (*p[f(2)])[f(3)];

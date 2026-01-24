@@ -64,3 +64,7 @@ static_assert(__builtin_types_compatible_p(typeof(B5), unsigned long));
 static_assert(B5type == 1);
 static_assert(__builtin_types_compatible_p(enum E5, unsigned long));
 static_assert(!__builtin_types_compatible_p(enum E5, enum { A5_ = A5, B5_ = B5 }));
+
+int main(void) {
+	return 0;
+}

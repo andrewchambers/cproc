@@ -1,4 +1,6 @@
 typedef int x;
-void f(void) {
-x:;
+
+int main(void) {
+x:
+	return 0;
 }

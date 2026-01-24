@@ -5,3 +5,13 @@ enum {
 };
 
 int a = A, b = B, c = C;
+
+int main(void) {
+	if (a != (unsigned char)0x321)
+		return 1;
+	if (b != (short)-2147438112)
+		return 1;
+	if (c != 0x80000003 * 2)
+		return 1;
+	return 0;
+}
