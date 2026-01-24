@@ -10,6 +10,20 @@ enum attrprefix {
 };
 
 static char *
+attr_string(void)
+{
+	struct stringlit lit;
+	struct type *t;
+
+	if (tok.kind != TSTRINGLIT)
+		error(&tok.loc, "expected string literal in attribute");
+	t = stringconcat(&lit, false);
+	if (t->size != 1)
+		error(&tok.loc, "attribute requires ordinary string literal");
+	return (char *)lit.data;
+}
+
+static char *
 strip(char *name)
 {
 	size_t len;
@@ -69,6 +83,17 @@ parseattr(struct attr *a, enum attrkind allowed, enum attrprefix prefix)
 			kind = ATTRDESTRUCTOR;
 		} else if (strcmp(name, "packed") == 0) {
 			kind = ATTRPACKED;
+		} else if (strcmp(name, "weak") == 0) {
+			kind = ATTRWEAK;
+		} else if (strcmp(name, "alias") == 0) {
+			kind = ATTRALIAS;
+			if (consume(TLPAREN)) {
+				if (a)
+					a->alias = attr_string();
+				else
+					attr_string();
+				expect(TRPAREN, "after alias");
+			}
 		}
 		break;
 	}

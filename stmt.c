@@ -379,7 +379,15 @@ stmt(struct func *f, struct scope *s)
 					asm_operands(s, &ins);
 					if (consume(TCOLON))
 						asm_clobbers(&clob);
+				} else if (consume(TCOLONCOLON)) {
+					/* empty inputs, clobbers follow */
+					asm_clobbers(&clob);
 				}
+			} else if (consume(TCOLONCOLON)) {
+				/* empty outputs */
+				asm_operands(s, &ins);
+				if (consume(TCOLON))
+					asm_clobbers(&clob);
 			}
 			expect(TRPAREN, "after inline asm");
 			expect(TSEMICOLON, "after inline asm");

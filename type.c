@@ -148,6 +148,19 @@ typecompatible(struct type *t1, struct type *t2)
 			return false;
 		goto derived;
 	case TYPEFUNC:
+		if (t1->u.func.isproto != t2->u.func.isproto) {
+			struct type *proto = t1->u.func.isproto ? t1 : t2;
+			if (proto->u.func.isvararg)
+				return false;
+			for (p1 = proto->u.func.params; p1; p1 = p1->next) {
+				struct type *pt = typepromote(p1->type, (unsigned)-1);
+				if (!typecompatible(p1->type, pt))
+					return false;
+			}
+			goto derived;
+		}
+		if (!t1->u.func.isproto)
+			goto derived;
 		if (t1->u.func.isvararg != t2->u.func.isvararg)
 			return false;
 		for (p1 = t1->u.func.params, p2 = t2->u.func.params; p1 && p2; p1 = p1->next, p2 = p2->next) {

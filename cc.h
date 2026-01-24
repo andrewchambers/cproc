@@ -224,6 +224,7 @@ struct type {
 		} array;
 		struct {
 			bool isvararg;
+			bool isproto;
 			struct decl *params;
 			size_t nparam;
 		} func;
@@ -279,6 +280,8 @@ struct decl {
 	struct value *value;
 	char *asmname;
 	char *regname;
+	char *alias;
+	bool weak;
 	bool defined;
 	bool tentative;
 	struct decl *next;
@@ -494,11 +497,14 @@ enum attrkind {
 	ATTRCONSTRUCTOR = 1<<1,
 	ATTRDESTRUCTOR  = 1<<2,
 	ATTRPACKED      = 1<<3,
+	ATTRWEAK        = 1<<4,
+	ATTRALIAS       = 1<<5,
 };
 
 struct attr {
 	enum attrkind kind;
 	int align;
+	char *alias;
 };
 
 bool attr(struct attr *, enum attrkind);
@@ -596,3 +602,5 @@ void funcasm(struct func *, bool, const char *,
 
 void emitfunc(struct func *, bool);
 void emitdata(struct decl *,  struct init *);
+void emitalias(struct decl *, const char *, bool);
+void emitweak(struct decl *);

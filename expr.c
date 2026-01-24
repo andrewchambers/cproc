@@ -206,8 +206,13 @@ exprassign(struct expr *e, struct type *t)
 			break;
 		if (et->kind != TYPEPOINTER)
 			error(&tok.loc, "assignment to pointer must be from pointer or null pointer constant");
-		if (t->base != &typevoid && et->base != &typevoid && !typecompatible(t->base, et->base))
-			error(&tok.loc, "base types of pointer assignment must be compatible or void");
+		if (t->base != &typevoid && et->base != &typevoid && !typecompatible(t->base, et->base)) {
+			bool relax = t->base->kind == TYPEFUNC && et->base->kind == TYPEFUNC &&
+			    (!t->base->u.func.isproto || !et->base->u.func.isproto) &&
+			    typecompatible(t->base->base, et->base->base);
+			if (!relax)
+				error(&tok.loc, "base types of pointer assignment must be compatible or void");
+		}
 		if ((et->qual & t->qual) != et->qual)
 			error(&tok.loc, "assignment to pointer discards qualifiers");
 		break;
@@ -1297,6 +1302,8 @@ condexpr(struct scope *s)
 	expect(TCOLON, "in conditional expression");
 	r = condexpr(s);
 
+	l = decay(l);
+	r = decay(r);
 	lt = l->type;
 	rt = r->type;
 	if (lt == rt) {

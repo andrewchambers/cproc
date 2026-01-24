@@ -3038,6 +3038,36 @@ print_sym(struct value *v)
 		printf("%s", v->u.name);
 }
 
+void
+emitweak(struct decl *d)
+{
+	if (d->linkage == LINKNONE)
+		return;
+	if (!d->value)
+		d->value = mkglobal(d);
+	printf(".weak ");
+	print_sym(d->value);
+	printf("\n");
+}
+
+void
+emitalias(struct decl *d, const char *target, bool weak)
+{
+	if (!d->value)
+		d->value = mkglobal(d);
+	if (weak)
+		printf(".weak ");
+	else if (d->linkage == LINKEXTERN)
+		printf(".globl ");
+	else if (!d->value->id)
+		printf(".local ");
+	print_sym(d->value);
+	printf("\n");
+	printf(".set ");
+	print_sym(d->value);
+	printf(", %s\n", target);
+}
+
 __attribute__((format(printf, 2, 3)))
 static void
 emit_data_value(unsigned long long size, const char *fmt, ...)
@@ -3197,7 +3227,7 @@ emitdata(struct decl *d, struct init *init)
 
 	align = d->u.obj.align;
 	if (d->linkage == LINKEXTERN) {
-		printf(".globl ");
+		printf(d->weak ? ".weak " : ".globl ");
 		print_sym(d->value);
 		printf("\n");
 	} else if (!d->value->id) {
@@ -3442,7 +3472,7 @@ emitfunc(struct func *f, bool global)
 
 	printf(".text\n");
 	if (global)
-		printf(".globl %s\n", f->decl->value->u.name);
+		printf(f->decl->weak ? ".weak %s\n" : ".globl %s\n", f->decl->value->u.name);
 	printf("%s:\n", f->decl->value->u.name);
 	printf("\tpush %%rbp\n\tmov %%rsp, %%rbp\n");
 	if (f->stack_size)

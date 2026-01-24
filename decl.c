@@ -161,7 +161,7 @@ funcspec(enum funcspec *fs)
 
 static void structdecl(struct scope *, struct structbuilder *);
 static void structlayout(struct type *);
-static struct qualtype declspecs(struct scope *, enum storageclass *, enum funcspec *, int *);
+static struct qualtype declspecs(struct scope *, enum storageclass *, enum funcspec *, int *, struct attr *);
 
 static struct type *
 tagspec(struct scope *s)
@@ -202,7 +202,7 @@ tagspec(struct scope *s)
 		next();
 	}
 	if (kind == TYPEENUM && consume(TCOLON)) {
-		et = declspecs(s, NULL, NULL, NULL).type;
+		et = declspecs(s, NULL, NULL, NULL, NULL).type;
 		if (!et)
 			error(&tok.loc, "no type in enum type specifier");
 	}
@@ -332,7 +332,7 @@ tagspec(struct scope *s)
 
 /* 6.7 Declarations */
 static struct qualtype
-declspecs(struct scope *s, enum storageclass *sc, enum funcspec *fs, int *align)
+declspecs(struct scope *s, enum storageclass *sc, enum funcspec *fs, int *align, struct attr *dattr)
 {
 	struct type *t, *other;
 	struct decl *d;
@@ -474,10 +474,12 @@ declspecs(struct scope *s, enum storageclass *sc, enum funcspec *fs, int *align)
 			break;
 
 		case T__ATTRIBUTE__:
-			a.kind = 0;
-			gnuattr(&a, ATTRPACKED);
+			a = (struct attr){0};
+			gnuattr(&a, ATTRPACKED|ATTRWEAK);
 			if (a.kind & ATTRPACKED)
 				packed_attr = true;
+			if (dattr && (a.kind & ATTRWEAK))
+				dattr->kind |= ATTRWEAK;
 			break;
 
 		default:
@@ -574,7 +576,7 @@ is used for the qualifiers of the base type). This is corrected in
 declarator().
 */
 static void
-declaratortypes(struct scope *s, struct list *result, char **name, struct scope **funcscope, bool allowabstract)
+declaratortypes(struct scope *s, struct list *result, char **name, struct scope **funcscope, bool allowabstract, struct attr *dattr)
 {
 	struct list *ptr, *prev;
 	struct type *t;
@@ -612,7 +614,7 @@ declaratortypes(struct scope *s, struct list *result, char **name, struct scope 
 				goto func;
 			}
 		}
-		declaratortypes(s, result, name, funcscope, allowabstract);
+		declaratortypes(s, result, name, funcscope, allowabstract, dattr);
 		expect(TRPAREN, "after parenthesized declarator");
 		allowattr = false;
 		break;
@@ -636,6 +638,7 @@ declaratortypes(struct scope *s, struct list *result, char **name, struct scope 
 			t = mktype(TYPEFUNC, 0);
 			t->qual = QUALNONE;
 			t->u.func.isvararg = false;
+			t->u.func.isproto = tok.kind != TRPAREN;
 			t->u.func.params = NULL;
 			t->u.func.nparam = 0;
 			paramend = &t->u.func.params;
@@ -695,7 +698,7 @@ declaratortypes(struct scope *s, struct list *result, char **name, struct scope 
 			if (!allowattr)
 				error(&tok.loc, "attribute not allowed after parenthesized declarator");
 			/* attribute applies to identifier if ptr->prev == result, otherwise type ptr->prev */
-			gnuattr(NULL, 0);
+			gnuattr(dattr, ATTRALIGNED|ATTRCONSTRUCTOR|ATTRDESTRUCTOR|ATTRPACKED|ATTRWEAK|ATTRALIAS);
 		attr:
 			break;
 		default:
@@ -705,7 +708,7 @@ declaratortypes(struct scope *s, struct list *result, char **name, struct scope 
 }
 
 static struct qualtype
-declarator(struct scope *s, struct qualtype base, char **name, struct scope **funcscope, bool allowabstract)
+declarator(struct scope *s, struct qualtype base, char **name, struct scope **funcscope, bool allowabstract, struct attr *dattr)
 {
 	struct type *t;
 	enum typequal tq;
@@ -714,7 +717,7 @@ declarator(struct scope *s, struct qualtype base, char **name, struct scope **fu
 
 	if (funcscope)
 		*funcscope = NULL;
-	declaratortypes(s, &result, name, funcscope, allowabstract);
+	declaratortypes(s, &result, name, funcscope, allowabstract, dattr);
 	for (l = result.prev; l != &result; l = prev) {
 		prev = l->prev;
 		t = listelement(l, struct type, link);
@@ -768,12 +771,12 @@ parameter(struct scope *s)
 	enum storageclass sc;
 
 	attr(NULL, 0);
-	t = declspecs(s, &sc, NULL, NULL);
+	t = declspecs(s, &sc, NULL, NULL, NULL);
 	if (!t.type)
 		error(&tok.loc, "no type in parameter declaration");
 	if (sc && sc != SCREGISTER)
 		error(&tok.loc, "parameter declaration has invalid storage-class specifier");
-	t = declarator(s, t, &name, NULL, true);
+	t = declarator(s, t, &name, NULL, true, NULL);
 	t.type = typeadjust(t.type, &t.qual);
 	d = mkdecl(name, DECLOBJECT, t.type, t.qual, LINKNONE);
 	d->u.obj.storage = SDAUTO;
@@ -941,7 +944,7 @@ structdecl(struct scope *s, struct structbuilder *b)
 	if (staticassert(s))
 		return;
 	attr(NULL, 0);
-	base = declspecs(s, NULL, NULL, &align);
+	base = declspecs(s, NULL, NULL, &align, NULL);
 	if (!base.type)
 		error(&tok.loc, "no type in struct member declaration");
 	if (tok.kind == TSEMICOLON) {
@@ -956,7 +959,7 @@ structdecl(struct scope *s, struct structbuilder *b)
 			width = intconstexpr(s, false);
 			addmember(b, base, NULL, 0, width);
 		} else {
-			mt = declarator(s, base, &name, NULL, false);
+			mt = declarator(s, base, &name, NULL, false, NULL);
 			width = consume(TCOLON) ? intconstexpr(s, false) : -1;
 			addmember(b, mt, name, align, width);
 		}
@@ -973,9 +976,9 @@ typename(struct scope *s, enum typequal *tq, struct expr **toeval)
 {
 	struct qualtype t;
 
-	t = declspecs(s, NULL, NULL, NULL);
+	t = declspecs(s, NULL, NULL, NULL, NULL);
 	if (t.type) {
-		t = declarator(s, t, NULL, NULL, true);
+		t = declarator(s, t, NULL, NULL, true, NULL);
 		if (tq)
 			*tq |= t.qual;
 		if (toeval)
@@ -1071,7 +1074,12 @@ decl(struct scope *s, struct func *f)
 	enum declkind kind;
 	struct scope *funcscope;
 	int align;
+	struct attr baseattr;
 
+	if (tok.kind == TSEMICOLON) {
+		next();
+		return true;
+	}
 	if (!f && tok.kind == T__ASM__) {
 		char *templ;
 		bool is_volatile = false;
@@ -1096,7 +1104,8 @@ decl(struct scope *s, struct func *f)
 		return true;
 	if (attr(NULL, 0) && consume(TSEMICOLON))
 		return true;
-	base = declspecs(s, &sc, &fs, &align);
+	baseattr = (struct attr){0};
+	base = declspecs(s, &sc, &fs, &align, &baseattr);
 	if (!base.type)
 		return false;
 	if (f) {
@@ -1114,8 +1123,15 @@ decl(struct scope *s, struct func *f)
 		return true;
 	}
 	for (;;) {
+		struct attr dattr;
+		int decl_align;
+
+		dattr = baseattr;
 		regname = NULL;
-		qt = declarator(s, base, &name, &funcscope, false);
+		qt = declarator(s, base, &name, &funcscope, false, &dattr);
+		decl_align = align;
+		if (dattr.align > decl_align)
+			decl_align = dattr.align;
 		t = qt.type;
 		tq = qt.qual;
 		if (consume(T__ASM__)) {
@@ -1136,7 +1152,7 @@ decl(struct scope *s, struct func *f)
 			error(&tok.loc, "'%s' redeclared with different kind", name);
 		switch (kind) {
 		case DECLTYPE:
-			if (align)
+			if (decl_align)
 				error(&tok.loc, "typedef '%s' declared with alignment specifier", name);
 			if (asmname)
 				error(&tok.loc, "typedef '%s' declared with assembler label", name);
@@ -1146,13 +1162,22 @@ decl(struct scope *s, struct func *f)
 				error(&tok.loc, "typedef '%s' redefined with different type", name);
 			break;
 		case DECLOBJECT:
-			if (align && align < t->align)
-				error(&tok.loc, "object '%s' requires alignment %d, which is stricter than specified alignment %d", name, t->align, align);
+			if (decl_align && decl_align < t->align)
+				error(&tok.loc, "object '%s' requires alignment %d, which is stricter than specified alignment %d", name, t->align, decl_align);
 			d = declcommon(s, kind, name, asmname, t, tq, sc, prior);
+			if (dattr.kind & ATTRWEAK)
+				d->weak = true;
+			if (dattr.kind & ATTRALIAS) {
+				if (!dattr.alias)
+					error(&tok.loc, "alias attribute requires a string literal");
+				if (d->alias && strcmp(d->alias, dattr.alias) != 0)
+					error(&tok.loc, "object '%s' redeclared with different alias", name);
+				d->alias = dattr.alias;
+			}
 			if (regname)
 				d->regname = regname;
-			if (d->u.obj.align < align)
-				d->u.obj.align = align;
+			if (d->u.obj.align < decl_align)
+				d->u.obj.align = decl_align;
 			if (d->linkage == LINKNONE && !(sc & SCSTATIC)) {
 				d->u.obj.storage = SDAUTO;
 			} else {
@@ -1164,6 +1189,17 @@ decl(struct scope *s, struct func *f)
 
 			if (base.expr)
 				funcexpr(f, base.expr);
+			if (d->alias) {
+				if (d->u.obj.storage == SDAUTO)
+					error(&tok.loc, "alias '%s' must not have automatic storage duration", name);
+				if (tok.kind == TASSIGN)
+					error(&tok.loc, "alias '%s' must not have initializer", name);
+				if (!d->value)
+					d->value = mkglobal(d);
+				emitalias(d, d->alias, d->weak);
+				d->defined = true;
+				break;
+			}
 			init = NULL;
 			hasinit = false;
 			if (consume(TASSIGN)) {
@@ -1174,6 +1210,8 @@ decl(struct scope *s, struct func *f)
 				init = parseinit(s, d->type);
 				hasinit = true;
 			} else if (sc & SCEXTERN) {
+				if (d->weak)
+					emitweak(d);
 				break;
 			} else if (d->linkage != LINKNONE && d->u.obj.storage == SDSTATIC) {
 				if (!d->defined && !d->tentative) {
@@ -1186,14 +1224,32 @@ decl(struct scope *s, struct func *f)
 			defineobj(d, init, hasinit, f);
 			break;
 		case DECLFUNC:
-			if (align)
+			if (decl_align)
 				error(&tok.loc, "function '%s' declared with alignment specifier", name);
 			if (f && sc && sc != SCEXTERN)  /* 6.7.1p7 */
 				error(&tok.loc, "function '%s' with block scope may only have storage class 'extern'", name);
 			d = declcommon(s, kind, name, asmname, t, tq, sc, prior);
 			d->value = mkglobal(d);
+			if (dattr.kind & ATTRWEAK)
+				d->weak = true;
+			if (dattr.kind & ATTRALIAS) {
+				if (!dattr.alias)
+					error(&tok.loc, "alias attribute requires a string literal");
+				if (d->alias && strcmp(d->alias, dattr.alias) != 0)
+					error(&tok.loc, "function '%s' redeclared with different alias", name);
+				d->alias = dattr.alias;
+			}
 			d->u.func.inlinedefn = d->linkage == LINKEXTERN && fs & FUNCINLINE && !(sc & SCEXTERN) && (!prior || prior->u.func.inlinedefn);
 			d->u.func.isnoreturn = fs & FUNCNORETURN;
+			if (d->alias) {
+				if (tok.kind == TLBRACE)
+					error(&tok.loc, "alias '%s' must not have a function body", name);
+				emitalias(d, d->alias, d->weak);
+				d->defined = true;
+				if (funcscope)
+					delscope(funcscope);
+				break;
+			}
 			if (tok.kind == TLBRACE) {
 				if (!allowfunc)
 					error(&tok.loc, "function definition not allowed");
@@ -1216,6 +1272,8 @@ decl(struct scope *s, struct func *f)
 			} else if (funcscope) {
 				delscope(funcscope);
 			}
+			if (d->weak)
+				emitweak(d);
 			break;
 		}
 		if (consume(TSEMICOLON))

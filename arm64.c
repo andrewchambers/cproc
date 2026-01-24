@@ -201,3 +201,19 @@ emitdata(struct decl *d, struct init *init)
 	(void)init;
 	unimp();
 }
+
+void
+emitalias(struct decl *d, const char *target, bool weak)
+{
+	(void)d;
+	(void)target;
+	(void)weak;
+	unimp();
+}
+
+void
+emitweak(struct decl *d)
+{
+	(void)d;
+	unimp();
+}
