@@ -353,7 +353,7 @@ struct expr {
 		union {
 			unsigned long long u;
 			long long i;
-			double f;
+			long double f;
 		} constant;
 		struct stringlit string;
 		struct {
@@ -562,6 +562,7 @@ void delfunc(struct func *);
 struct type *functype(struct func *);
 void funclabel(struct func *, struct block *);
 struct value *funcexpr(struct func *, struct expr *);
+void funcdiscard(struct func *, struct type *);
 void funcjmp(struct func *, struct block *);
 void funcjnz(struct func *, struct value *, struct type *, struct block *, struct block *);
 void funcret(struct func *, struct value *);

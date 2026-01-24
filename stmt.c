@@ -91,6 +91,7 @@ stmt(struct func *f, struct scope *s)
 	default:
 		e = expr(s);
 		v = funcexpr(f, e);
+		funcdiscard(f, e->type);
 		delexpr(e);
 		expect(TSEMICOLON, "after expression statement");
 		break;
@@ -231,6 +232,7 @@ stmt(struct func *f, struct scope *s)
 			if (tok.kind != TSEMICOLON) {
 				e = expr(s);
 				funcexpr(f, e);
+				funcdiscard(f, e->type);
 				delexpr(e);
 			}
 			expect(TSEMICOLON, NULL);
@@ -265,6 +267,7 @@ stmt(struct func *f, struct scope *s)
 		funclabel(f, b[2]);
 		if (e) {
 			funcexpr(f, e);
+			funcdiscard(f, e->type);
 			delexpr(e);
 		}
 		funcjmp(f, b[0]);

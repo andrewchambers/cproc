@@ -19,6 +19,8 @@ cast(struct expr *expr)
 	if (expr->type->prop & PROPFLOAT) {
 		if (size == 4)
 			expr->u.constant.f = (float)expr->u.constant.f;
+		else if (size == 8)
+			expr->u.constant.f = (double)expr->u.constant.f;
 	} else if (expr->type->prop & PROPINT) {
 		expr->u.constant.u &= -1ull >> CHAR_BIT * sizeof(unsigned long long) - size * 8;
 		if (expr->type->u.basic.issigned) {
@@ -162,11 +164,11 @@ eval(struct expr *expr)
 			} else if (l->type->prop & PROPFLOAT && t->prop & PROPINT) {
 				if (t->u.basic.issigned) {
 					if (l->u.constant.f < -0x1p63 || l->u.constant.f >= 0x1p63)
-						error(&tok.loc, "integer part of floating-point constant %g cannot be represented as signed integer", l->u.constant.f);
+						error(&tok.loc, "integer part of floating-point constant %Lg cannot be represented as signed integer", l->u.constant.f);
 					expr->u.constant.i = l->u.constant.f;
 				} else {
 					if (l->u.constant.f < 0.0 || l->u.constant.f >= 0x1p64)
-						error(&tok.loc, "integer part of floating-point constant %g cannot be represented as unsigned integer", l->u.constant.f);
+						error(&tok.loc, "integer part of floating-point constant %Lg cannot be represented as unsigned integer", l->u.constant.f);
 					expr->u.constant.u = l->u.constant.f;
 				}
 			} else {

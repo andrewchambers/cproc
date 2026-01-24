@@ -98,6 +98,14 @@ funcexpr(struct func *f, struct expr *e)
 }
 
 void
+funcdiscard(struct func *f, struct type *t)
+{
+	(void)f;
+	(void)t;
+	unimp();
+}
+
+void
 funcjmp(struct func *f, struct block *l)
 {
 	(void)f;

@@ -70,7 +70,6 @@ specified in `config.h`.
 
 - Digraph sequences ([6.4.6p3], will not be implemented).
 - `volatile`-qualified types ([#7]).
-- `long double` type ([#3]).
 - Inline assembly ([#5]).
 - Preprocessor ([#6]).
 - Generation of position independent code (i.e. shared libraries,

@@ -694,7 +694,7 @@ primaryexpr(struct scope *s)
 		}
 		if (strpbrk(tok.lit, base == 16 ? ".pP" : ".eE")) {
 			/* floating constant */
-			e->u.constant.f = strtod(tok.lit, &end);
+			e->u.constant.f = strtold(tok.lit, &end);
 			if (end == tok.lit)
 				error(&tok.loc, "invalid floating constant '%s'", tok.lit);
 			if (!end[0])
@@ -808,7 +808,7 @@ builtinfunc(struct scope *s, enum builtinkind kind)
 	case BUILTININFF:
 		e = mkexpr(EXPRCONST, &typefloat, NULL);
 		/* TODO: use INFINITY here when we can handle musl's math.h */
-		e->u.constant.f = strtod("inf", NULL);
+		e->u.constant.f = strtold("inf", NULL);
 		break;
 	case BUILTINNANF:
 		e = assignexpr(s);
@@ -816,7 +816,7 @@ builtinfunc(struct scope *s, enum builtinkind kind)
 			error(&tok.loc, "__builtin_nanf currently only supports empty string literals");
 		e = mkexpr(EXPRCONST, &typefloat, NULL);
 		/* TODO: use NAN here when we can handle musl's math.h */
-		e->u.constant.f = strtod("nan", NULL);
+		e->u.constant.f = strtold("nan", NULL);
 		break;
 	case BUILTINOFFSETOF:
 		t = typename(s, NULL, NULL);

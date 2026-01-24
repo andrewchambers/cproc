@@ -98,8 +98,10 @@ static const char *argreg8[] = {"%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"};
 static const char *argreg16[] = {"%di", "%si", "%dx", "%cx", "%r8w", "%r9w"};
 static const char *argreg32[] = {"%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"};
 static const char *argreg64[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+static unsigned ldconst_id;
 
 static int is_flonum(struct type *t);
+static int is_longdouble(struct type *t);
 static struct type *basetype(struct type *t);
 static void funccopy(struct func *f, int size);
 static void eval_vla(struct func *f, struct type *t);
@@ -252,7 +254,7 @@ mkfunc(struct decl *decl, char *name, struct type *t, struct scope *s)
 	if (f->is_vararg) {
 		int gp = 0;
 		int fp = 0;
-		int stack = 0;
+		int stack_bytes = 0;
 
 		if (t->base->kind == TYPESTRUCT || t->base->kind == TYPEUNION)
 			gp = 1;
@@ -260,21 +262,26 @@ mkfunc(struct decl *decl, char *name, struct type *t, struct scope *s)
 			struct type *pt = d->type;
 			if (pt->kind == TYPESTRUCT || pt->kind == TYPEUNION || pt->kind == TYPEARRAY)
 				pt = mkpointertype(pt, QUALNONE);
-			if (is_flonum(pt)) {
-				if (fp < FP_MAX)
+			if (is_longdouble(pt)) {
+				int pad = (16 - (stack_bytes % 16)) % 16;
+				stack_bytes += pad + 16;
+			} else if (is_flonum(pt)) {
+				if (fp < FP_MAX) {
 					fp++;
-				else
-					stack++;
+				} else {
+					stack_bytes += 8;
+				}
 			} else {
-				if (gp < GP_MAX)
+				if (gp < GP_MAX) {
 					gp++;
-				else
-					stack++;
+				} else {
+					stack_bytes += 8;
+				}
 			}
 		}
 		f->vararg_gp_offset = gp * 8;
 		f->vararg_fp_offset = 48 + fp * 16;
-		f->vararg_overflow = 16 + stack * 8;
+		f->vararg_overflow = 16 + stack_bytes;
 		f->vararg_regsave = alloc_stack(f, 48 + 16 * FP_MAX, 16);
 	}
 
@@ -358,6 +365,13 @@ funcjnz(struct func *f, struct value *v, struct type *t, struct block *l1, struc
 {
 	(void)v;
 	t = basetype(t);
+	if (is_longdouble(t)) {
+		emitf(f, "\tfldz\n");
+		emitf(f, "\tfxch %%st(1)\n");
+		emitf(f, "\tfucomip %%st(1), %%st\n");
+		emitf(f, "\tfstp %%st(0)\n");
+		return;
+	}
 	if (is_flonum(t)) {
 		if (t->size == 4) {
 			emitf(f, "\txorps %%xmm1, %%xmm1\n");
@@ -423,6 +437,13 @@ is_flonum(struct type *t)
 }
 
 static int
+is_longdouble(struct type *t)
+{
+	t = basetype(t);
+	return t->kind == TYPELDOUBLE;
+}
+
+static int
 is_integer(struct type *t)
 {
 	return t->prop & PROPINT || t->kind == TYPEPOINTER || t->kind == TYPENULLPTR;
@@ -467,6 +488,22 @@ popf(struct func *f, int reg)
 }
 
 static void
+pushld(struct func *f)
+{
+	emitf(f, "\tsub $16, %%rsp\n");
+	emitf(f, "\tfstpt (%%rsp)\n");
+	f->depth += 2;
+}
+
+static void
+popld(struct func *f)
+{
+	emitf(f, "\tfldt (%%rsp)\n");
+	emitf(f, "\tadd $16, %%rsp\n");
+	f->depth -= 2;
+}
+
+static void
 gen_addr(struct func *f, struct expr *e);
 static void
 gen_expr(struct func *f, struct expr *e);
@@ -477,6 +514,10 @@ load(struct func *f, struct type *t)
 	t = basetype(t);
 	if (t->kind == TYPEARRAY || t->kind == TYPESTRUCT || t->kind == TYPEUNION || t->kind == TYPEFUNC)
 		return;
+	if (is_longdouble(t)) {
+		emitf(f, "\tfldt (%%rax)\n");
+		return;
+	}
 	if (is_flonum(t)) {
 		if (t->size == 4)
 			emitf(f, "\tmovss (%%rax), %%xmm0\n");
@@ -507,6 +548,11 @@ store(struct func *f, struct type *t)
 	t = basetype(t);
 	if (t->kind == TYPEARRAY || t->kind == TYPESTRUCT || t->kind == TYPEUNION)
 		return;
+	if (is_longdouble(t)) {
+		emitf(f, "\tfstpt (%%rdi)\n");
+		emitf(f, "\tfldt (%%rdi)\n");
+		return;
+	}
 	if (is_flonum(t)) {
 		if (t->size == 4)
 			emitf(f, "\tmovss %%xmm0, (%%rdi)\n");
@@ -670,6 +716,13 @@ static void
 cmp_zero(struct func *f, struct type *t)
 {
 	t = basetype(t);
+	if (is_longdouble(t)) {
+		emitf(f, "\tfldz\n");
+		emitf(f, "\tfxch %%st(1)\n");
+		emitf(f, "\tfucomip %%st(1), %%st\n");
+		emitf(f, "\tfstp %%st(0)\n");
+		return;
+	}
 	if (is_flonum(t)) {
 		if (t->size == 4) {
 			emitf(f, "\txorps %%xmm1, %%xmm1\n");
@@ -690,6 +743,14 @@ static void
 tobool(struct func *f, struct type *t)
 {
 	t = basetype(t);
+	if (is_longdouble(t)) {
+		emitf(f, "\tfldz\n");
+		emitf(f, "\tfxch %%st(1)\n");
+		emitf(f, "\tfucomip %%st(1), %%st\n");
+		emitf(f, "\tfstp %%st(0)\n");
+		emitf(f, "\tsetp %%al\n\tsetne %%dl\n\tor %%dl, %%al\n\tmovzb %%al, %%eax\n");
+		return;
+	}
 	if (is_flonum(t)) {
 		if (t->size == 4) {
 			emitf(f, "\txorps %%xmm1, %%xmm1\n");
@@ -797,12 +858,89 @@ static void
 cast(struct func *f, struct type *from, struct type *to)
 {
 	int t1, t2;
+	struct type *bf, *bt;
 
 	if (to->kind == TYPEVOID)
 		return;
 	if (to->kind == TYPEBOOL) {
 		tobool(f, from);
 		return;
+	}
+	bf = basetype(from);
+	bt = basetype(to);
+	if (bf->kind == TYPELDOUBLE || bt->kind == TYPELDOUBLE) {
+		if (bf->kind == TYPELDOUBLE && bt->kind == TYPELDOUBLE)
+			return;
+		if (bt->kind == TYPELDOUBLE) {
+			if (bf->prop & PROPINT || bf->kind == TYPEPOINTER || bf->kind == TYPENULLPTR) {
+				if (bf->size == 1)
+					emitf(f, "\tmov%sbq %%al, %%rax\n", bf->u.basic.issigned ? "s" : "z");
+				else if (bf->size == 2)
+					emitf(f, "\tmov%swq %%ax, %%rax\n", bf->u.basic.issigned ? "s" : "z");
+				else if (bf->size == 4) {
+					if (bf->u.basic.issigned)
+						emitf(f, "\tmovsxd %%eax, %%rax\n");
+					else
+						emitf(f, "\tmov %%eax, %%eax\n");
+				}
+				emitf(f, "\tsub $8, %%rsp\n");
+				emitf(f, "\tmov %%rax, (%%rsp)\n");
+				emitf(f, "\tfildq (%%rsp)\n");
+				emitf(f, "\tadd $8, %%rsp\n");
+				return;
+			}
+			if (bf->kind == TYPEFLOAT || bf->kind == TYPEDOUBLE) {
+				emitf(f, "\tsub $8, %%rsp\n");
+				if (bf->size == 4) {
+					emitf(f, "\tmovss %%xmm0, (%%rsp)\n");
+					emitf(f, "\tflds (%%rsp)\n");
+				} else {
+					emitf(f, "\tmovsd %%xmm0, (%%rsp)\n");
+					emitf(f, "\tfldl (%%rsp)\n");
+				}
+				emitf(f, "\tadd $8, %%rsp\n");
+				return;
+			}
+		} else {
+			if (bt->kind == TYPEFLOAT || bt->kind == TYPEDOUBLE) {
+				emitf(f, "\tsub $8, %%rsp\n");
+				if (bt->size == 4) {
+					emitf(f, "\tfstps (%%rsp)\n");
+					emitf(f, "\tmovss (%%rsp), %%xmm0\n");
+				} else {
+					emitf(f, "\tfstpl (%%rsp)\n");
+					emitf(f, "\tmovsd (%%rsp), %%xmm0\n");
+				}
+				emitf(f, "\tadd $8, %%rsp\n");
+				return;
+			}
+			if (bt->prop & PROPINT || bt->kind == TYPEPOINTER || bt->kind == TYPENULLPTR) {
+				emitf(f, "\tsub $8, %%rsp\n");
+				emitf(f, "\tfisttpq (%%rsp)\n");
+				emitf(f, "\tmov (%%rsp), %%rax\n");
+				emitf(f, "\tadd $8, %%rsp\n");
+				if (bt->kind == TYPEPOINTER || bt->kind == TYPENULLPTR)
+					return;
+				switch (bt->size) {
+				case 1:
+					emitf(f, "\tmov%sbq %%al, %%rax\n", bt->u.basic.issigned ? "s" : "z");
+					break;
+				case 2:
+					emitf(f, "\tmov%swq %%ax, %%rax\n", bt->u.basic.issigned ? "s" : "z");
+					break;
+				case 4:
+					if (bt->u.basic.issigned)
+						emitf(f, "\tmovsxd %%eax, %%rax\n");
+					else
+						emitf(f, "\tmov %%eax, %%eax\n");
+					break;
+				default:
+					break;
+				}
+				return;
+			}
+		}
+		fatal("unsupported long double cast");
 	}
 	t1 = gettypeid(from);
 	t2 = gettypeid(to);
@@ -1024,7 +1162,17 @@ gen_expr(struct func *f, struct expr *e)
 	case EXPRCONST:
 		t = basetype(e->type);
 		if (is_flonum(t)) {
-			if (t->size == 4) {
+			if (is_longdouble(t)) {
+				long double ld = (long double)e->u.constant.f;
+				unsigned char bytes[16];
+				unsigned id = ++ldconst_id;
+				memcpy(bytes, &ld, sizeof(bytes));
+				emitf(f, "\t.section .rodata\n\t.align 16\n.LC%u:\n", id);
+				for (i = 0; i < 16; ++i)
+					emitf(f, "\t.byte %u\n", (unsigned)bytes[i]);
+				emitf(f, "\t.text\n");
+				emitf(f, "\tfldt .LC%u(%%rip)\n", id);
+			} else if (t->size == 4) {
 				union { float f; unsigned u; } c32;
 				c32.f = (float)e->u.constant.f;
 				emitf(f, "\tmov $%u, %%eax\n", c32.u);
@@ -1061,7 +1209,9 @@ gen_expr(struct func *f, struct expr *e)
 			return;
 		case TSUB:
 			gen_expr(f, e->base);
-			if (is_flonum(e->type)) {
+			if (is_longdouble(e->type)) {
+				emitf(f, "\tfchs\n");
+			} else if (is_flonum(e->type)) {
 				if (e->type->size == 4) {
 					emitf(f, "\txorps %%xmm1, %%xmm1\n");
 					emitf(f, "\tsubss %%xmm0, %%xmm1\n");
@@ -1099,6 +1249,22 @@ gen_expr(struct func *f, struct expr *e)
 		}
 		push(f);
 		load(f, e->base->type);
+		if (is_longdouble(e->base->type)) {
+			if (e->u.incdec.post)
+				pushld(f);
+			emitf(f, "\tfld1\n");
+			if (e->op == TINC)
+				emitf(f, "\tfaddp %%st, %%st(1)\n");
+			else
+				emitf(f, "\tfsubrp %%st, %%st(1)\n");
+			pop(f, "%rdi");
+			store(f, e->base->type);
+			if (e->u.incdec.post) {
+				emitf(f, "\tfstp %%st(0)\n");
+				popld(f);
+			}
+			return;
+		}
 		if (is_flonum(e->base->type)) {
 			if (e->u.incdec.post)
 				pushf(f);
@@ -1184,6 +1350,53 @@ gen_expr(struct func *f, struct expr *e)
 
 			funclabel(f, b3);
 			return;
+		}
+		if (is_longdouble(e->u.binary.l->type)) {
+			gen_expr(f, e->u.binary.r);
+			pushld(f);
+			gen_expr(f, e->u.binary.l);
+			popld(f);
+			if (e->op == TADD) {
+				emitf(f, "\tfaddp %%st, %%st(1)\n");
+				return;
+			} else if (e->op == TSUB) {
+				emitf(f, "\tfsubrp %%st, %%st(1)\n");
+				return;
+			} else if (e->op == TMUL) {
+				emitf(f, "\tfmulp %%st, %%st(1)\n");
+				return;
+			} else if (e->op == TDIV) {
+				emitf(f, "\tfdivrp %%st, %%st(1)\n");
+				return;
+			} else {
+				emitf(f, "\tfxch %%st(1)\n");
+				emitf(f, "\tfucomip %%st(1), %%st\n");
+				emitf(f, "\tfstp %%st(0)\n");
+				switch (e->op) {
+				case TEQL:
+					emitf(f, "\tsete %%al\n\tsetnp %%dl\n\tand %%dl, %%al\n");
+					break;
+				case TNEQ:
+					emitf(f, "\tsetne %%al\n\tsetp %%dl\n\tor %%dl, %%al\n");
+					break;
+				case TLESS:
+					emitf(f, "\tsetb %%al\n\tsetnp %%dl\n\tand %%dl, %%al\n");
+					break;
+				case TLEQ:
+					emitf(f, "\tsetbe %%al\n\tsetnp %%dl\n\tand %%dl, %%al\n");
+					break;
+				case TGREATER:
+					emitf(f, "\tseta %%al\n\tsetnp %%dl\n\tand %%dl, %%al\n");
+					break;
+				case TGEQ:
+					emitf(f, "\tsetae %%al\n\tsetnp %%dl\n\tand %%dl, %%al\n");
+					break;
+				default:
+					fatal("unhandled float compare");
+				}
+				emitf(f, "\tand $1, %%al\n\tmovzb %%al, %%eax\n");
+				return;
+			}
 		}
 		if (is_flonum(e->u.binary.l->type)) {
 			gen_expr(f, e->u.binary.r);
@@ -1334,19 +1547,24 @@ gen_expr(struct func *f, struct expr *e)
 		assign_lvalue(f, e->u.assign.l, e->u.assign.r);
 		return;
 	case EXPRCOMMA:
-		for (arg = e->base; arg->next; arg = arg->next)
+		for (arg = e->base; arg->next; arg = arg->next) {
 			gen_expr(f, arg);
+			if (is_longdouble(arg->type))
+				emitf(f, "\tfstp %%st(0)\n");
+		}
 		gen_expr(f, arg);
 		return;
 	case EXPRCALL:
 		{
 			struct expr **args;
 			bool *pass_stack;
+			int *stack_pad;
 			int nstack;
 			struct value *ret = NULL;
 			int fp_used = 0;
 			int spill_depth = f->depth;
 			long spill_off = 0;
+			int stack_bytes;
 
 			isvararg = e->base->type->base->u.func.isvararg;
 			retbuf = e->type->kind == TYPESTRUCT || e->type->kind == TYPEUNION;
@@ -1366,6 +1584,7 @@ gen_expr(struct func *f, struct expr *e)
 				nargs++;
 			args = nargs ? xmalloc(sizeof(*args) * (size_t)nargs) : NULL;
 			pass_stack = nargs ? xmalloc(sizeof(*pass_stack) * (size_t)nargs) : NULL;
+			stack_pad = nargs ? xmalloc(sizeof(*stack_pad) * (size_t)nargs) : NULL;
 			for (arg = e->u.call.args, i = 0; arg; arg = arg->next, ++i)
 				args[i] = arg;
 
@@ -1378,15 +1597,16 @@ gen_expr(struct func *f, struct expr *e)
 
 			gp = retbuf ? 1 : 0;
 			fp = 0;
-			nstack = 0;
 			for (i = 0; i < nargs; ++i) {
-				if (is_flonum(args[i]->type)) {
+				stack_pad[i] = 0;
+				if (is_longdouble(args[i]->type)) {
+					pass_stack[i] = true;
+				} else if (is_flonum(args[i]->type)) {
 					if (fp < FP_MAX) {
 						pass_stack[i] = false;
 						fp++;
 					} else {
 						pass_stack[i] = true;
-						nstack++;
 					}
 				} else {
 					if (gp < GP_MAX) {
@@ -1394,11 +1614,21 @@ gen_expr(struct func *f, struct expr *e)
 						gp++;
 					} else {
 						pass_stack[i] = true;
-						nstack++;
 					}
 				}
 			}
 			fp_used = fp;
+			stack_bytes = 0;
+			for (i = nargs - 1; i >= 0; --i) {
+				if (!pass_stack[i])
+					continue;
+				int align = is_longdouble(args[i]->type) ? 16 : 8;
+				int size = is_longdouble(args[i]->type) ? 16 : 8;
+				int pad = (align - (stack_bytes % align)) % align;
+				stack_pad[i] = pad;
+				stack_bytes += pad + size;
+			}
+			nstack = stack_bytes / 8;
 
 			if ((f->depth + nstack) % 2) {
 				emitf(f, "\tsub $8, %%rsp\n");
@@ -1410,8 +1640,14 @@ gen_expr(struct func *f, struct expr *e)
 			for (i = nargs - 1; i >= 0; --i) {
 				if (!pass_stack[i])
 					continue;
+				if (stack_pad[i]) {
+					emitf(f, "\tsub $%d, %%rsp\n", stack_pad[i]);
+					f->depth += stack_pad[i] / 8;
+				}
 				gen_arg(f, args[i]);
-				if (is_flonum(args[i]->type))
+				if (is_longdouble(args[i]->type))
+					pushld(f);
+				else if (is_flonum(args[i]->type))
 					pushf(f);
 				else
 					push(f);
@@ -1503,7 +1739,15 @@ gen_expr(struct func *f, struct expr *e)
 				eval_vla(f, at);
 			gen_expr(f, e->base);
 			emitf(f, "\tmov %%rax, %%r11\n");
-			if (is_flonum(at)) {
+			if (is_longdouble(at)) {
+				emitf(f, "\tmov 8(%%r11), %%rdx\n");
+				emitf(f, "\tadd $15, %%rdx\n");
+				emitf(f, "\tand $-16, %%rdx\n");
+				emitf(f, "\tfldt (%%rdx)\n");
+				emitf(f, "\tadd $16, %%rdx\n");
+				emitf(f, "\tmov %%rdx, 8(%%r11)\n");
+				return;
+			} else if (is_flonum(at)) {
 				emitf(f, "\tmov 4(%%r11), %%edx\n");
 				emitf(f, "\tcmp $%d, %%edx\n", 48 + 16 * FP_MAX);
 				emitf(f, "\tjae .Lvaarg_%s_overflow%u\n", fname, label);
@@ -1596,6 +1840,13 @@ funcexpr(struct func *f, struct expr *e)
 	return &regval;
 }
 
+void
+funcdiscard(struct func *f, struct type *t)
+{
+	if (is_longdouble(t))
+		emitf(f, "\tfstp %%st(0)\n");
+}
+
 static void
 print_sym(struct value *v)
 {
@@ -1651,6 +1902,14 @@ emit_data_item(struct expr *expr, unsigned long long size)
 		printf(" %c %llu", expr->op == TADD ? '+' : '-', expr->u.binary.r->u.constant.u);
 		break;
 	case EXPRCONST:
+		if (expr->type->kind == TYPELDOUBLE) {
+			long double ld = (long double)expr->u.constant.f;
+			unsigned char bytes[16];
+			memcpy(bytes, &ld, sizeof(bytes));
+			for (size_t i = 0; i < 16; ++i)
+				printf(".byte %u\n", (unsigned)bytes[i]);
+			break;
+		}
 		if (expr->type->prop & PROPFLOAT) {
 			if (expr->type->size == 4) {
 				union { float f; unsigned u; } c32;
@@ -1944,6 +2203,8 @@ funcinit(struct func *f, struct decl *d, struct init *init, bool hasinit)
 			funccopy(f, (int)expr->type->size);
 		} else {
 			store(f, expr->type);
+			if (is_longdouble(expr->type))
+				emitf(f, "\tfstp %%st(0)\n");
 		}
 	}
 }
@@ -1997,6 +2258,18 @@ emitfunc(struct func *f, bool global)
 		bool is_ref = v && v->kind == V_PARAMREF;
 		int psz = is_ref ? 8 : (int)p->type->size;
 
+		if (!is_ref && is_longdouble(p->type)) {
+			if (stack_offset % 16)
+				stack_offset += 16 - (stack_offset % 16);
+			printf("\tlea %d(%%rbp), %%rsi\n", stack_offset);
+			printf("\tlea %ld(%%rbp), %%rdi\n", v->offset);
+			printf("\tmov 0(%%rsi), %%rax\n");
+			printf("\tmov %%rax, 0(%%rdi)\n");
+			printf("\tmov 8(%%rsi), %%rax\n");
+			printf("\tmov %%rax, 8(%%rdi)\n");
+			stack_offset += 16;
+			continue;
+		}
 		if (!is_ref && is_flonum(p->type) && fp < FP_MAX) {
 			if (p->type->size == 4)
 				printf("\tmovss %%xmm%d, %ld(%%rbp)\n", fp, v->offset);
@@ -2055,6 +2328,8 @@ emitfunc(struct func *f, bool global)
 	/* implicit return for fallthrough */
 	if (f->type->base->kind == TYPESTRUCT || f->type->base->kind == TYPEUNION) {
 		printf("\tmov %ld(%%rbp), %%rax\n", f->retbuf_offset);
+	} else if (is_longdouble(f->type->base)) {
+		printf("\tfldz\n");
 	} else if (is_flonum(f->type->base)) {
 		if (f->type->base->size == 4)
 			printf("\txorps %%xmm0, %%xmm0\n");
