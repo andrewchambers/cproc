@@ -62,6 +62,30 @@ initadd(struct initparser *p, struct init *new)
 	p->last = &new->next;
 }
 
+static bool
+skip_member(struct member *m)
+{
+	return m->bitwidth >= 0 && !m->name;
+}
+
+static struct member *
+first_member(struct type *t)
+{
+	struct member *m;
+
+	for (m = t->u.structunion.members; m && skip_member(m); m = m->next)
+		;
+	return m;
+}
+
+static struct member *
+next_member(struct member *m)
+{
+	do m = m->next;
+	while (m && skip_member(m));
+	return m;
+}
+
 static void
 subobj(struct initparser *p, struct type *t, unsigned long long off)
 {
@@ -85,6 +109,8 @@ findmember(struct initparser *p, char *name)
 				subobj(p, m->type, m->offset);
 				return true;
 			}
+		} else if (skip_member(m)) {
+			continue;
 		} else {
 			subobj(p, m->type, m->offset);
 			if (findmember(p, name))
@@ -153,7 +179,9 @@ focus(struct initparser *p)
 		break;
 	case TYPESTRUCT:
 	case TYPEUNION:
-		p->sub->u.mem = p->sub->type->u.structunion.members;
+		p->sub->u.mem = first_member(p->sub->type);
+		if (!p->sub->u.mem)
+			error(&tok.loc, "struct/union has no members");
 		t = p->sub->u.mem->type;
 		break;
 	default:
@@ -188,7 +216,7 @@ advance(struct initparser *p)
 			subobj(p, t->base, p->sub->u.idx);
 			return;
 		case TYPESTRUCT:
-			p->sub->u.mem = p->sub->u.mem->next;
+			p->sub->u.mem = next_member(p->sub->u.mem);
 			if (p->sub->u.mem) {
 				subobj(p, p->sub->u.mem->type, p->sub->u.mem->offset);
 				return;

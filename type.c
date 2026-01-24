@@ -60,6 +60,8 @@ mktype(enum typekind kind, enum typeprop prop)
 	t->value = NULL;
 	t->incomplete = false;
 	t->flexible = false;
+	t->packed = false;
+	t->hasbitfield = false;
 
 	return t;
 }
@@ -274,6 +276,8 @@ typemember(struct type *t, const char *name, unsigned long long *offset)
 				*offset += m->offset;
 				return m;
 			}
+		} else if (m->bitwidth >= 0) {
+			continue;
 		} else {
 			sub = typemember(m->type, name, offset);
 			if (sub) {

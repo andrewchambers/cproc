@@ -160,6 +160,7 @@ funcspec(enum funcspec *fs)
 }
 
 static void structdecl(struct scope *, struct structbuilder *);
+static void structlayout(struct type *);
 static struct qualtype declspecs(struct scope *, enum storageclass *, enum funcspec *, int *);
 
 static struct type *
@@ -225,6 +226,8 @@ tagspec(struct scope *s)
 		if (tag)
 			scopeputtag(s, tag, t);
 	}
+	if (kind == TYPESTRUCT || kind == TYPEUNION)
+		t->packed |= a.kind & ATTRPACKED;
 	if (tok.kind != TLBRACE)
 		return t;
 	if (!t->incomplete)
@@ -236,14 +239,12 @@ tagspec(struct scope *s)
 		b.type = t;
 		b.last = &t->u.structunion.members;
 		b.bits = 0;
-		b.pack = a.kind & ATTRPACKED;
+		b.pack = t->packed;
 		do structdecl(s, &b);
 		while (tok.kind != TRBRACE);
 		if (!t->u.structunion.members)
 			error(&tok.loc, "struct/union has no members");
 		next();
-		if (!b.pack)
-			t->size = ALIGNUP(t->size, t->align);
 		break;
 	case TYPEENUM:
 		enumconsts = NULL;
@@ -342,6 +343,8 @@ declspecs(struct scope *s, enum storageclass *sc, enum funcspec *fs, int *align)
 	int ntypes = 0;
 	unsigned long long i;
 	struct expr *typeofexpr = NULL;
+	bool packed_attr = false;
+	struct attr a;
 
 	t = NULL;
 	if (sc)
@@ -471,7 +474,10 @@ declspecs(struct scope *s, enum storageclass *sc, enum funcspec *fs, int *align)
 			break;
 
 		case T__ATTRIBUTE__:
-			gnuattr(NULL, 0);
+			a.kind = 0;
+			gnuattr(&a, ATTRPACKED);
+			if (a.kind & ATTRPACKED)
+				packed_attr = true;
 			break;
 
 		default:
@@ -530,6 +536,15 @@ done:
 	}
 	if (!t && (tq || sc && *sc || fs && *fs))
 		error(&tok.loc, "declaration has no type specifier");
+	if (packed_attr) {
+		if (!t)
+			error(&tok.loc, "packed attribute requires a type");
+		if (t->kind != TYPESTRUCT && t->kind != TYPEUNION)
+			error(&tok.loc, "packed attribute only applies to struct/union types");
+		t->packed = true;
+	}
+	if (t && (t->kind == TYPESTRUCT || t->kind == TYPEUNION) && !t->incomplete)
+		structlayout(t);
 	/*
 	TODO: consider delaying attribute parsing to declarator(),
 	so we can tell the difference between the start of an
@@ -770,7 +785,7 @@ addmember(struct structbuilder *b, struct qualtype mt, char *name, int align, un
 {
 	struct type *t = b->type;
 	struct member *m;
-	size_t end;
+	int req_align = align;
 
 	if (t->kind == TYPESTRUCT && t->flexible)
 		error(&tok.loc, "struct has member '%s' after flexible array member", name);
@@ -789,71 +804,30 @@ addmember(struct structbuilder *b, struct qualtype mt, char *name, int align, un
 	if (mt.type->prop & PROPVM)
 		error(&tok.loc, "struct member '%s' has variably modified type", name);
 	assert(mt.type->align > 0);
-	if (name || width == -1) {
-		m = xmalloc(sizeof(*m));
-		m->type = mt.type;
-		m->qual = mt.qual;
-		m->name = name;
-		m->next = NULL;
-		*b->last = m;
-		b->last = &m->next;
-	} else {
-		m = NULL;
-	}
-	if (width == -1) {
-		m->bits.before = 0;
-		m->bits.after = 0;
-		if (align < mt.type->align) {
-			if (align)
-				error(&tok.loc, "specified alignment of struct member '%s' is less strict than is required by type", name);
-			align = b->pack ? 1 : mt.type->align;
-		}
-		if (t->kind == TYPESTRUCT) {
-			m->offset = ALIGNUP(t->size, align);
-			t->size = m->offset + mt.type->size;
-		} else {
-			m->offset = 0;
-			if (t->size < mt.type->size)
-				t->size = mt.type->size;
-		}
-		b->bits = 0;
-	} else {  /* bit-field */
+	if (width != -1)
+		t->hasbitfield = true;
+	if (width != -1) {
 		if (!(mt.type->prop & PROPINT))
-			error(&tok.loc, "bit-field '%s' has invalid type", name);
+			error(&tok.loc, name ? "bit-field '%s' has invalid type" : "bit-field has invalid type", name);
 		if (align)
-			error(&tok.loc, "alignment specified for bit-field '%s'", name);
-		if (b->pack)
-			error(&tok.loc, "bit-field '%s' in packed struct is not supported", name);
+			error(&tok.loc, name ? "alignment specified for bit-field '%s'" : "alignment specified for bit-field", name);
 		if (!width && name)
 			error(&tok.loc, "bit-field '%s' with zero width must not have declarator", name);
 		if (width > mt.type->size * 8)
-			error(&tok.loc, "bit-field '%s' exceeds width of underlying type", name);
-		align = mt.type->align;
-		if (t->kind == TYPESTRUCT) {
-			/* calculate end of the storage-unit for this bit-field */
-			end = ALIGNUP(t->size, mt.type->size);
-			if (!width || width > (end - t->size) * 8 + b->bits) {
-				/* no room, allocate a new storage-unit */
-				t->size = end;
-				b->bits = 0;
-			}
-			if (m) {
-				m->offset = ALIGNDOWN(t->size - !!b->bits, mt.type->size);
-				m->bits.before = (t->size - m->offset) * 8 - b->bits;
-				m->bits.after = mt.type->size * 8 - width - m->bits.before;
-			}
-			t->size += (width - b->bits + 7) / 8;
-			b->bits = (b->bits - width) % 8;
-		} else if (m) {
-			m->offset = 0;
-			m->bits.before = 0;
-			m->bits.after = mt.type->size * 8 - width;
-			if (t->size < mt.type->size)
-				t->size = mt.type->size;
-		}
+			error(&tok.loc, name ? "bit-field '%s' exceeds width of underlying type" : "bit-field exceeds width of underlying type", name);
 	}
-	if (m && t->align < align)
-		t->align = align;
+	m = xmalloc(sizeof(*m));
+	m->type = mt.type;
+	m->qual = mt.qual;
+	m->name = name;
+	m->req_align = req_align;
+	m->bitwidth = width == -1 ? -1 : (int)width;
+	m->offset = 0;
+	m->bits.before = 0;
+	m->bits.after = 0;
+	m->next = NULL;
+	*b->last = m;
+	b->last = &m->next;
 }
 
 static bool
@@ -877,6 +851,83 @@ staticassert(struct scope *s)
 	expect(TRPAREN, "after static assertion");
 	expect(TSEMICOLON, "after static assertion");
 	return true;
+}
+
+static void
+structlayout(struct type *t)
+{
+	struct member *m;
+	size_t end;
+	int align;
+	unsigned bits;
+
+	if (t->kind != TYPESTRUCT && t->kind != TYPEUNION)
+		error(&tok.loc, "internal error: structlayout called for non-struct/union");
+	if (t->packed && t->hasbitfield) {
+		for (m = t->u.structunion.members; m; m = m->next) {
+			if (m->bitwidth >= 0) {
+				if (m->name)
+					error(&tok.loc, "bit-field '%s' in packed struct is not supported", m->name);
+				error(&tok.loc, "bit-field in packed struct is not supported");
+			}
+		}
+		error(&tok.loc, "bit-field in packed struct is not supported");
+	}
+	t->size = 0;
+	t->align = 0;
+	bits = 0;
+	for (m = t->u.structunion.members; m; m = m->next) {
+		if (m->bitwidth == -1) {
+			const char *mname = m->name ? m->name : "<anonymous>";
+			align = m->req_align;
+			if (align < m->type->align) {
+				if (align)
+					error(&tok.loc, "specified alignment of struct member '%s' is less strict than is required by type", mname);
+				align = t->packed ? 1 : m->type->align;
+			}
+			if (!align)
+				align = t->packed ? 1 : m->type->align;
+			if (t->kind == TYPESTRUCT) {
+				m->offset = ALIGNUP(t->size, align);
+				t->size = m->offset + m->type->size;
+			} else {
+				m->offset = 0;
+				if (t->size < m->type->size)
+					t->size = m->type->size;
+			}
+			m->bits.before = 0;
+			m->bits.after = 0;
+			bits = 0;
+		} else {  /* bit-field */
+			align = m->type->align;
+			if (t->kind == TYPESTRUCT) {
+				/* calculate end of the storage-unit for this bit-field */
+				end = ALIGNUP(t->size, m->type->size);
+				if (!m->bitwidth || m->bitwidth > (end - t->size) * 8 + bits) {
+					/* no room, allocate a new storage-unit */
+					t->size = end;
+					bits = 0;
+				}
+				m->offset = ALIGNDOWN(t->size - !!bits, m->type->size);
+				m->bits.before = (t->size - m->offset) * 8 - bits;
+				m->bits.after = m->type->size * 8 - m->bitwidth - m->bits.before;
+				t->size += (m->bitwidth - bits + 7) / 8;
+				bits = (bits - m->bitwidth) % 8;
+			} else {
+				m->offset = 0;
+				m->bits.before = 0;
+				m->bits.after = m->type->size * 8 - m->bitwidth;
+				if (t->size < m->type->size)
+					t->size = m->type->size;
+			}
+		}
+		if (t->align < align)
+			t->align = align;
+	}
+	if (t->align == 0)
+		t->align = 1;
+	if (!t->packed)
+		t->size = ALIGNUP(t->size, t->align);
 }
 
 static void

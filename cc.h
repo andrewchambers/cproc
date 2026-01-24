@@ -195,6 +195,8 @@ struct member {
 	enum typequal qual;
 	unsigned long long offset;
 	struct bitfield bits;
+	int req_align;
+	int bitwidth;
 	struct member *next;
 };
 
@@ -209,6 +211,8 @@ struct type {
 	/* qualifiers of the base type */
 	enum typequal qual;
 	bool incomplete, flexible;
+	bool packed;
+	bool hasbitfield;
 	union {
 		struct {
 			bool issigned, iscomplex;
