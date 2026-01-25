@@ -129,10 +129,13 @@ struct location {
 	size_t line, col;
 };
 
+struct hideset;
+
 struct token {
 	enum tokenkind kind;
 	/* whether or not the token is ineligible for expansion */
 	bool hide;
+	struct hideset *hideset;
 	/* whether or not the token was preceeded by a space */
 	bool space;
 	struct location loc;
@@ -418,6 +421,7 @@ struct init {
 
 extern struct token tok;
 extern const char *tokstr[];
+extern const size_t tokstr_len;
 
 void tokenprint(const struct token *);
 char *tokencheck(const struct token *, enum tokenkind, const char *);
@@ -429,6 +433,7 @@ void scanfrom(const char *, FILE *);
 void scanopen(void);
 void scansetloc(struct location loc);
 void scan(struct token *);
+struct token *scantokens(const char *, const char *, size_t *);
 
 /* preprocessor */
 
@@ -437,10 +442,20 @@ enum ppflags {
 	PPNEWLINE   = 1 << 0,
 };
 
+enum ppinc {
+	PPINC_QUOTE,
+	PPINC_SYSTEM,
+	PPINC_AFTER,
+};
+
 extern enum ppflags ppflags;
 extern bool pic;
 
 void ppinit(void);
+void ppaddinc(const char *, int);
+void ppdef(const char *, const char *);
+void ppundef(const char *);
+void ppnostdinc(bool);
 
 void next(void);
 bool peek(int);

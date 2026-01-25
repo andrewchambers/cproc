@@ -120,6 +120,8 @@ const char *tokstr[] = {
 	[THASHHASH] = "##",
 };
 
+const size_t tokstr_len = LEN(tokstr);
+
 void
 tokenprint(const struct token *t)
 {
@@ -136,6 +138,9 @@ tokenprint(const struct token *t)
 		break;
 	case TNEWLINE:
 		str = "\n";
+		break;
+	case TOTHER:
+		str = t->lit;
 		break;
 	case TEOF:
 		return;

@@ -48,6 +48,7 @@ startfiles=0
 endfiles=0
 defines=
 linkflags=
+incdirs=
 
 case "$target" in
 *-linux-*musl*)
@@ -186,6 +187,22 @@ esac
 
 test "$DEFAULT_DYNAMIC_LINKER" && linkflags=$linkflags' "--dynamic-linker", "'$DEFAULT_DYNAMIC_LINKER'"'
 
+printf 'checking include search paths... '
+incs=$($CC -E -xc - -v </dev/null 2>&1 | awk '
+	/search starts here:/{flag=1;next}
+	/End of search list/{flag=0}
+	flag{gsub(/^[[:space:]]+/, "", $0); print}
+')
+if [ -n "$incs" ] ; then
+	for dir in $incs ; do
+		incdirs=$incdirs'"'$dir'", '
+	done
+	printf 'ok\n'
+else
+	incdirs='0'
+	printf 'none\n'
+fi
+
 printf "creating config.h... "
 cat >config.h <<EOF
 static const char target[]               = "$target";
@@ -210,6 +227,7 @@ static const char *const preprocesscmd[] = {
 	"-D", "__extension__=",
 	"-D", "_Imaginary_I=I",
 $defines};
+static const char *const includedirs[] = {$incdirs};
 static const char *const assemblecmd[]   = {"$DEFAULT_ASSEMBLER"};
 static const char *const linkcmd[]       = {"$DEFAULT_LINKER", $linkflags};
 EOF

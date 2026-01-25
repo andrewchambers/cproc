@@ -483,7 +483,13 @@ main(int argc, char *argv[])
 		return 1;  /* unreachable */
 	}
 
-	arrayaddbuf(&stages[PREPROCESS].cmd, preprocesscmd, sizeof(preprocesscmd));
+	/* use internal preprocessor */
+	arrayaddptr(&stages[PREPROCESS].cmd, compilecommand(argv[0], backend));
+	arrayaddptr(&stages[PREPROCESS].cmd, "-E");
+	arrayaddptr(&stages[PREPROCESS].cmd, "-t");
+	arrayaddptr(&stages[PREPROCESS].cmd, arch);
+	for (i = 1; i < LEN(preprocesscmd); ++i)
+		arrayaddptr(&stages[PREPROCESS].cmd, (char *)preprocesscmd[i]);
 	arrayaddptr(&stages[COMPILE].cmd, compilecommand(argv[0], backend));
 	arrayaddbuf(&stages[ASSEMBLE].cmd, assemblecmd, sizeof(assemblecmd));
 	arrayaddbuf(&stages[LINK].cmd, linkcmd, sizeof(linkcmd));

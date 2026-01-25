@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -139,16 +140,36 @@ static enum tokenkind
 number(struct scanner *s)
 {
 	bool allowsign = false;
+	bool ishex = false;
+	bool isbin = false;
 
 	s->usebuf = true;
 	for (;;) {
 		nextchar(s);
+		if (s->buf.len == 1 && s->buf.str[0] == '0') {
+			if (s->chr == 'x' || s->chr == 'X') {
+				ishex = true;
+				continue;
+			}
+			if (s->chr == 'b' || s->chr == 'B') {
+				isbin = true;
+				continue;
+			}
+		}
 		switch (s->chr) {
 		case 'e':
 		case 'E':
+			if (!ishex && !isbin) {
+				allowsign = true;
+				continue;
+			}
+			break;
 		case 'p':
 		case 'P':
-			allowsign = true;
+			if (ishex) {
+				allowsign = true;
+				continue;
+			}
 			break;
 		case '+':
 		case '-':
@@ -158,12 +179,13 @@ number(struct scanner *s)
 		case '_':
 		case '.':
 			allowsign = false;
-			break;
+			continue;
 		default:
 			if (!isalnum(s->chr))
 				goto done;
-			allowsign = false;
+			break;
 		}
+		allowsign = false;
 	}
 done:
 	return TNUMBER;
@@ -438,6 +460,50 @@ scanopen(void)
 	}
 }
 
+struct token *
+scantokens(const char *name, const char *src, size_t *n)
+{
+	struct scanner s;
+	struct scanner *saved;
+	struct token t;
+	struct array toks = {0};
+	FILE *f;
+
+	f = fmemopen((void *)src, strlen(src), "r");
+	if (!f)
+		fatal("fmemopen:");
+	memset(&s, 0, sizeof(s));
+	s.file = f;
+	s.loc.file = name;
+	s.loc.line = 1;
+	s.loc.col = 0;
+	s.next = NULL;
+	nextchar(&s);
+
+	saved = scanner;
+	scanner = &s;
+	for (;;) {
+		scan(&t);
+		if (t.kind == TEOF)
+			break;
+		if (t.kind == TNEWLINE)
+			continue;
+		if (t.lit) {
+			char *dup = strdup(t.lit);
+			if (!dup)
+				fatal("strdup:");
+			t.lit = dup;
+		}
+		arrayaddbuf(&toks, &t, sizeof(t));
+	}
+	scanner = saved;
+	fclose(f);
+	free(s.buf.str);
+
+	*n = toks.len / sizeof(t);
+	return toks.val;
+}
+
 void
 scansetloc(struct location loc)
 {
@@ -472,4 +538,5 @@ scan(struct token *t)
 	}
 	t->space = scanner->sawspace;
 	t->hide = false;
+	t->hideset = NULL;
 }
