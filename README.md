@@ -104,7 +104,7 @@ specified in `config.h`.
 
 - Digraph sequences ([6.4.6p3], will not be implemented).
 - `volatile`-qualified types ([#7], requires qbe support).
-- `long double` type ([#3], requires qbe support).
+- `long double` on non-x86_64 SysV targets.
 - The preprocessor is not fully implemented ([#6]).
 - Generation of position independent code (i.e. shared libraries,
   modules, PIEs).

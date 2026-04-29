@@ -1,0 +1,40 @@
+type :.Lld = align 16 { x }
+export
+function :.Lld $f(:.Lld %.1) {
+@start.1
+	%.2 =l alloc16 16
+	%.7 =l alloc16 16
+	%.9 =l alloc16 16
+@body.2
+	%.3 =l loadl %.1
+	storel %.3, %.2
+	%.4 =l add %.1, 8
+	%.5 =l add %.2, 8
+	%.6 =l loadl %.4
+	storel %.6, %.5
+	storel 9223372036854775808, %.7
+	%.8 =l add %.7, 8
+	storel 0, %.8
+	storeh 16383, %.8
+	call $__cproc_ld80_add(l %.9, l %.2, l %.7)
+	ret %.9
+}
+export
+function w $g(:.Lld %.1) {
+@start.3
+	%.2 =l alloc16 16
+	%.7 =l alloc16 16
+@body.4
+	%.3 =l loadl %.1
+	storel %.3, %.2
+	%.4 =l add %.1, 8
+	%.5 =l add %.2, 8
+	%.6 =l loadl %.4
+	storel %.6, %.5
+	storel 0, %.7
+	%.8 =l add %.7, 8
+	storel 0, %.8
+	storeh 0, %.8
+	%.9 =w call $__cproc_ld80_eq(l %.2, l %.7)
+	ret %.9
+}

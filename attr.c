@@ -71,6 +71,18 @@ parseattr(struct attr *a, enum attrkind allowed, enum attrprefix prefix)
 			kind = ATTRCONSTRUCTOR;
 		} else if (strcmp(name, "destructor") == 0) {
 			kind = ATTRDESTRUCTOR;
+		} else if (strcmp(name, "weak") == 0) {
+			kind = ATTRWEAK;
+		} else if (strcmp(name, "alias") == 0) {
+			struct stringlit lit;
+
+			kind = ATTRALIAS;
+			expect(TLPAREN, "after alias attribute");
+			tokencheck(&tok, TSTRINGLIT, "after alias attribute");
+			stringconcat(&lit, true);
+			if (a)
+				a->alias = lit.data;
+			expect(TRPAREN, "after alias target");
 		} else if (strcmp(name, "packed") == 0) {
 			kind = ATTRPACKED;
 		}

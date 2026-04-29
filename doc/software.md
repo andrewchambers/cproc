@@ -18,15 +18,9 @@ patch directories in the [oasis package tree] for any patches used.
 
 ## binutils
 
-On musl systems, you must define `long double` to match `double` (as
-below) to avoid errors in unused `static inline` functions in musl's
-`math.h`. Note: this is a hack and won't be ABI-compatible with musl;
-things will break if any functions with `long double` get called.
-
-```diff
--struct type typeldouble = FLTTYPE(TYPELDOUBLE, 16, NULL);  // XXX: not supported by qbe
-+struct type typeldouble = FLTTYPE(TYPELDOUBLE, 8, &f64);
-```
+Older versions of cproc required defining `long double` to match
+`double` on musl systems. That workaround is no longer ABI-compatible
+with the x86_64 SysV backend and should not be used.
 
 Requires several patches available here:
 https://github.com/michaelforney/binutils-gdb/tree/cproc-fixes

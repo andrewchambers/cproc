@@ -10,6 +10,7 @@ bindir='$(PREFIX)/bin'
 host=
 target=
 gcclibdir=
+runtime=
 
 for arg ; do
 	case "$arg" in
@@ -25,6 +26,8 @@ for arg ; do
 	--with-gcc-libdir=*) gcclibdir=${arg#*=} ;;
 	--with-macos-sdk=*) macossdk=${arg#*=} ;;
 	CC=*) CC=${arg#*=} ;;
+	AR=*) AR=${arg#*=} ;;
+	RANLIB=*) RANLIB=${arg#*=} ;;
 	CFLAGS=*) CFLAGS=${arg#*=} ;;
 	LDFLAGS=*) LDFLAGS=${arg#*=} ;;
 	*) fail "unknown option '$arg'"
@@ -172,6 +175,12 @@ case "$target" in
 	fail "unknown target '$target', please create config.h manually"
 esac
 
+case "$target" in
+x86_64-apple-*|amd64-apple-*) runtime= ;;
+x86_64-*|amd64-*) runtime='$(objdir)/cproc-rt.a' ;;
+*) runtime= ;;
+esac
+
 DEFAULT_CPP=$(printf '"%s", ' ${DEFAULT_CPP:-${toolprefix}cpp})
 DEFAULT_QBE=$(printf '"%s", ' ${DEFAULT_QBE:-qbe})
 DEFAULT_AS=$(printf '"%s", ' ${DEFAULT_AS:-${toolprefix}as})
@@ -202,6 +211,7 @@ static const char *const preprocesscmd[] = {
 
 	/* ignore extension markers */
 	"-D", "__extension__=",
+	"-D", "__cproc__=1",
 $defines};
 static const char *const codegencmd[]    = {$DEFAULT_QBE};
 static const char *const assemblecmd[]   = {$DEFAULT_AS};
@@ -214,7 +224,10 @@ cat >config.mk <<EOF
 PREFIX=$prefix
 BINDIR=$bindir
 CC=${CC:-cc}
+AR=${AR:-ar}
+RANLIB=${RANLIB:-ranlib}
 CFLAGS=${CFLAGS:--Wall -Wpedantic -Wno-parentheses -Wno-switch -g -pipe}
 LDFLAGS=$LDFLAGS
+RUNTIME=$runtime
 EOF
 echo done

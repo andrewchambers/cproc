@@ -55,6 +55,7 @@ static struct {
 	bool nostdlib;
 	bool verbose;
 } flags;
+static char *rtlib;
 static struct stageinfo stages[] = {
 	[PREPROCESS] = {.name = "preprocess"},
 	[COMPILE]    = {.name = "compile"},
@@ -64,10 +65,15 @@ static struct stageinfo stages[] = {
 };
 
 static const char *const ignoreflags[] = {
+	"fPIC",
+	"fPIE",
 	"fno-builtin",
+	"fno-pic",
 	"pedantic",
 	"pedantic-errors",
-	"pipe"
+	"pipe",
+	"fpic",
+	"fpie"
 };
 
 static void
@@ -318,6 +324,8 @@ buildexe(struct input *inputs, size_t ninputs, char *output)
 	}
 	if (!flags.nostdlib && endfiles[0])
 		arrayaddbuf(&s->cmd, endfiles, sizeof(endfiles));
+	if (!flags.nostdlib && rtlib)
+		arrayaddptr(&s->cmd, rtlib);
 	arrayaddptr(&s->cmd, NULL);
 
 	ret = spawn(&pid, &s->cmd, NULL);
@@ -344,25 +352,34 @@ nextarg(char ***argv)
 }
 
 static char *
-compilecommand(char *arg)
+siblingfile(char *arg, const char *suffix)
 {
 	char self[PATH_MAX], *cmd;
-	size_t n;
+	size_t n, suffixlen;
 
-	n = readlink("/proc/self/exe", self, sizeof(self) - 5);
+	suffixlen = strlen(suffix) + 1;
+	if (suffixlen > sizeof(self))
+		fatal("suffix is too large");
+	n = readlink("/proc/self/exe", self, sizeof(self) - suffixlen);
 	if (n == -1) {
 		n = strlen(arg);
-		if (n > sizeof(self) - 5)
+		if (n > sizeof(self) - suffixlen)
 			fatal("argv[0] is too large");
 		memcpy(self, arg, n);
-	} else if (n == sizeof(self) - 5) {
+	} else if (n == sizeof(self) - suffixlen) {
 		fatal("target of /proc/self/exe is too large");
 	}
-	strcpy(self + n, "-qbe");
+	strcpy(self + n, suffix);
 	cmd = strdup(self);
 	if (!cmd)
 		fatal("strdup:");
 	return cmd;
+}
+
+static char *
+compilecommand(char *arg)
+{
+	return siblingfile(arg, "-qbe");
 }
 
 static int
@@ -395,6 +412,7 @@ main(int argc, char *argv[])
 	} else if (hasprefix(target, "x86_64-") || hasprefix(target, "amd64-")) {
 		arch = "x86_64-sysv";
 		qbearch = "amd64_sysv";
+		rtlib = siblingfile(argv[0], "-rt.a");
 	} else if (hasprefix(target, "aarch64-")) {
 		arch = "aarch64";
 		qbearch = "arm64";

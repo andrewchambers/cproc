@@ -147,7 +147,7 @@ funcspec(enum funcspec *fs)
 }
 
 static void structdecl(struct scope *, struct structbuilder *);
-static struct qualtype declspecs(struct scope *, enum storageclass *, enum funcspec *, int *);
+static struct qualtype declspecs(struct scope *, enum storageclass *, enum funcspec *, int *, struct attr *);
 
 static struct type *
 tagspec(struct scope *s)
@@ -188,7 +188,7 @@ tagspec(struct scope *s)
 		next();
 	}
 	if (kind == TYPEENUM && consume(TCOLON)) {
-		et = declspecs(s, NULL, NULL, NULL).type;
+		et = declspecs(s, NULL, NULL, NULL, NULL).type;
 		if (!et)
 			error(&tok.loc, "no type in enum type specifier");
 	}
@@ -320,7 +320,7 @@ tagspec(struct scope *s)
 
 /* 6.7 Declarations */
 static struct qualtype
-declspecs(struct scope *s, enum storageclass *sc, enum funcspec *fs, int *align)
+declspecs(struct scope *s, enum storageclass *sc, enum funcspec *fs, int *align, struct attr *da)
 {
 	struct type *t, *other;
 	struct decl *d;
@@ -467,7 +467,15 @@ declspecs(struct scope *s, enum storageclass *sc, enum funcspec *fs, int *align)
 			break;
 
 		case T__ATTRIBUTE__:
-			gnuattr(NULL, 0);
+			if (da) {
+				struct attr ga = {0};
+
+				gnuattr(&ga, ATTRNORETURN | ATTRALIGNED | ATTRCONSTRUCTOR |
+				             ATTRDESTRUCTOR | ATTRPACKED | ATTRWEAK | ATTRALIAS);
+				da->kind |= ga.kind & (ATTRNORETURN | ATTRWEAK);
+			} else {
+				gnuattr(NULL, 0);
+			}
 			break;
 
 		default:
@@ -555,7 +563,7 @@ is used for the qualifiers of the base type). This is corrected in
 declarator().
 */
 static void
-declaratortypes(struct scope *s, struct list *result, char **name, struct scope **funcscope, bool allowabstract)
+declaratortypes(struct scope *s, struct list *result, char **name, struct scope **funcscope, struct attr *idattr, bool allowabstract)
 {
 	struct list *ptr;
 	struct type *t;
@@ -592,7 +600,7 @@ declaratortypes(struct scope *s, struct list *result, char **name, struct scope 
 				goto func;
 			}
 		}
-		declaratortypes(s, result, name, funcscope, allowabstract);
+		declaratortypes(s, result, name, funcscope, idattr, allowabstract);
 		expect(TRPAREN, "after parenthesized declarator");
 		allowattr = false;
 		break;
@@ -675,7 +683,10 @@ declaratortypes(struct scope *s, struct list *result, char **name, struct scope 
 			if (!allowattr)
 				error(&tok.loc, "attribute not allowed after parenthesized declarator");
 			/* attribute applies to identifier if ptr->prev == result, otherwise type ptr->prev */
-			gnuattr(NULL, 0);
+			if (ptr->prev == result && idattr)
+				gnuattr(idattr, ATTRNORETURN | ATTRWEAK | ATTRALIAS);
+			else
+				gnuattr(NULL, 0);
 		attr:
 			break;
 		default:
@@ -685,7 +696,7 @@ declaratortypes(struct scope *s, struct list *result, char **name, struct scope 
 }
 
 static struct qualtype
-declarator(struct scope *s, struct qualtype base, char **name, struct scope **funcscope, bool allowabstract)
+declarator(struct scope *s, struct qualtype base, char **name, struct scope **funcscope, struct attr *idattr, bool allowabstract)
 {
 	struct type *t;
 	enum typequal tq;
@@ -694,7 +705,7 @@ declarator(struct scope *s, struct qualtype base, char **name, struct scope **fu
 
 	if (funcscope)
 		*funcscope = NULL;
-	declaratortypes(s, &result, name, funcscope, allowabstract);
+	declaratortypes(s, &result, name, funcscope, idattr, allowabstract);
 	for (l = result.prev; l != &result; l = prev) {
 		prev = l->prev;
 		t = listelement(l, struct type, link);
@@ -756,12 +767,12 @@ parameter(struct scope *s)
 	enum storageclass sc;
 
 	attr(NULL, 0);
-	t = declspecs(s, &sc, NULL, NULL);
+	t = declspecs(s, &sc, NULL, NULL, NULL);
 	if (!t.type)
 		error(&tok.loc, "no type in parameter declaration");
 	if (sc && sc != SCREGISTER)
 		error(&tok.loc, "parameter declaration has invalid storage-class specifier");
-	t = declarator(s, t, &name, NULL, true);
+	t = declarator(s, t, &name, NULL, NULL, true);
 	t.type = typeadjust(t.type, &t.qual);
 	d = mkdecl(name, DECLOBJECT, t.type, t.qual, LINKNONE);
 	d->u.obj.storage = SDAUTO;
@@ -895,7 +906,7 @@ structdecl(struct scope *s, struct structbuilder *b)
 	if (staticassert(s))
 		return;
 	attr(NULL, 0);
-	base = declspecs(s, NULL, NULL, &align);
+	base = declspecs(s, NULL, NULL, &align, NULL);
 	if (!base.type)
 		error(&tok.loc, "no type in struct member declaration");
 	if (tok.kind == TSEMICOLON) {
@@ -910,7 +921,7 @@ structdecl(struct scope *s, struct structbuilder *b)
 			width = intconstexpr(s, false);
 			addmember(b, base, NULL, 0, width);
 		} else {
-			mt = declarator(s, base, &name, NULL, false);
+			mt = declarator(s, base, &name, NULL, NULL, false);
 			width = consume(TCOLON) ? intconstexpr(s, false) : -1;
 			addmember(b, mt, name, align, width);
 		}
@@ -927,9 +938,9 @@ typename(struct scope *s, enum typequal *tq, struct expr **toeval)
 {
 	struct qualtype t;
 
-	t = declspecs(s, NULL, NULL, NULL);
+	t = declspecs(s, NULL, NULL, NULL, NULL);
 	if (t.type) {
-		t = declarator(s, t, NULL, NULL, true);
+		t = declarator(s, t, NULL, NULL, NULL, true);
 		if (tq)
 			*tq |= t.qual;
 		if (toeval)
@@ -1018,6 +1029,7 @@ decl(struct scope *s, struct func *f)
 	enum storageclass sc;
 	enum funcspec fs;
 	struct attr a;
+	struct attr idattr;
 	struct init *init;
 	bool hasinit;
 	char *name, *asmname;
@@ -1029,10 +1041,10 @@ decl(struct scope *s, struct func *f)
 
 	if (staticassert(s))
 		return true;
-	a.kind = 0;
+	a = (struct attr){0};
 	if (attr(&a, ATTRNORETURN) && consume(TSEMICOLON))
 		return true;
-	base = declspecs(s, &sc, &fs, &align);
+	base = declspecs(s, &sc, &fs, &align, &a);
 	if (!base.type)
 		return false;
 	if (f) {
@@ -1050,7 +1062,8 @@ decl(struct scope *s, struct func *f)
 		return true;
 	}
 	for (;;) {
-		qt = declarator(s, base, &name, &funcscope, false);
+		idattr = (struct attr){0};
+		qt = declarator(s, base, &name, &funcscope, &idattr, false);
 		t = qt.type;
 		tq = qt.qual;
 		if (consume(T__ASM__)) {
@@ -1065,7 +1078,7 @@ decl(struct scope *s, struct func *f)
 		} else {
 			asmname = NULL;
 		}
-		gnuattr(&a, 0);  /* appertains to identifier */
+		gnuattr(&idattr, ATTRNORETURN | ATTRWEAK | ATTRALIAS);  /* appertains to identifier */
 		kind = sc & SCTYPEDEF ? DECLTYPE : t->kind == TYPEFUNC ? DECLFUNC : DECLOBJECT;
 		prior = scopegetdecl(s, name, false);
 		if (prior && prior->kind != kind)
@@ -1094,6 +1107,17 @@ decl(struct scope *s, struct func *f)
 				if (t->prop & PROPVM)
 					error(&tok.loc, "object '%s' with %s storage duration cannot have variably modified type", name, d->u.obj.storage == SDSTATIC ? "static" : "thread");
 				d->value = mkglobal(d);
+			}
+			if (idattr.kind & ATTRALIAS) {
+				if (d->linkage != LINKEXTERN)
+					error(&tok.loc, "alias '%s' must have external linkage", name);
+				emitalias(d, scopegetdecl(s, idattr.alias, true), idattr.alias, (a.kind | idattr.kind) & ATTRWEAK);
+				break;
+			}
+			if ((a.kind | idattr.kind) & ATTRWEAK) {
+				if (d->linkage == LINKNONE)
+					error(&tok.loc, "weak object '%s' must have linkage", name);
+				emitweak(d);
 			}
 
 			if (base.expr)
@@ -1127,7 +1151,22 @@ decl(struct scope *s, struct func *f)
 			d = declcommon(s, kind, name, asmname, t, tq, sc, prior);
 			d->value = mkglobal(d);
 			d->u.func.inlinedefn = d->linkage == LINKEXTERN && fs & FUNCINLINE && !(sc & SCEXTERN) && (!prior || prior->u.func.inlinedefn);
-			d->u.func.isnoreturn = fs & FUNCNORETURN || a.kind & ATTRNORETURN;
+			d->u.func.isnoreturn = fs & FUNCNORETURN || a.kind & ATTRNORETURN || idattr.kind & ATTRNORETURN;
+			if (idattr.kind & ATTRALIAS) {
+				if (d->linkage != LINKEXTERN)
+					error(&tok.loc, "alias '%s' must have external linkage", name);
+				emitalias(d, scopegetdecl(s, idattr.alias, true), idattr.alias, (a.kind | idattr.kind) & ATTRWEAK);
+				if (tok.kind == TLBRACE)
+					error(&tok.loc, "alias '%s' cannot have a function body", name);
+				if (funcscope)
+					delscope(funcscope);
+				break;
+			}
+			if ((a.kind | idattr.kind) & ATTRWEAK) {
+				if (d->linkage == LINKNONE)
+					error(&tok.loc, "weak function '%s' must have linkage", name);
+				emitweak(d);
+			}
 			if (tok.kind == TLBRACE) {
 				if (!allowfunc)
 					error(&tok.loc, "function definition not allowed");

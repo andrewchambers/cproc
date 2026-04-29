@@ -768,7 +768,7 @@ primaryexpr(struct scope *s)
 		}
 		if (strpbrk(tok.lit, base == 16 ? ".pP" : ".eE")) {
 			/* floating constant */
-			e->u.constant.f = strtod(tok.lit, &end);
+			e->u.constant.f = strtold(tok.lit, &end);
 			if (end == tok.lit)
 				error(&tok.loc, "invalid floating constant '%s'", tok.lit);
 			if (!end[0])

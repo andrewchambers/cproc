@@ -1,6 +1,7 @@
 *.o
 /cproc
 /cproc-qbe
+/cproc-rt.a
 /config.h
 /config.mk
 /stage2

@@ -4,12 +4,15 @@ PREFIX=/usr/local
 BINDIR=$(PREFIX)/bin
 MANDIR=$(PREFIX)/share/man
 BACKEND=qbe
+AR=ar
+RANLIB=ranlib
+RUNTIME=
 
 objdir=.
 -include config.mk
 
 .PHONY: all
-all: $(objdir)/cproc $(objdir)/cproc-qbe
+all: $(objdir)/cproc $(objdir)/cproc-qbe $(RUNTIME)
 
 DRIVER_SRC=\
 	driver.c\
@@ -46,9 +49,16 @@ HDR=\
 	cc.h\
 	tokens.h\
 	util.h
+RUNTIME_OBJ=$(objdir)/ld80.o
+RUNTIME_LIB=$(objdir)/cproc-rt.a
 
 $(objdir)/cproc-qbe: $(OBJ)
 	$(CC) $(LDFLAGS) -o $@ $(OBJ)
+
+$(RUNTIME_LIB): $(RUNTIME_OBJ)
+	rm -f $@
+	$(AR) rc $@ $(RUNTIME_OBJ)
+	$(RANLIB) $@
 
 $(objdir)/attr.o    : attr.c    $(HDR)          $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ attr.c
 $(objdir)/decl.o    : decl.c    $(HDR)          $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ decl.c
@@ -69,6 +79,7 @@ $(objdir)/tree.o    : tree.c    util.h          $(stagedeps) ; $(CC) $(CFLAGS) -
 $(objdir)/type.o    : type.c    $(HDR)          $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ type.c
 $(objdir)/utf.o     : utf.c     utf.h           $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ utf.c
 $(objdir)/util.o    : util.c    util.h          $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ util.c
+$(objdir)/ld80.o    : ld80.s                    $(stagedeps) ; $(CC) -c -o $@ ld80.s
 
 # Make sure stage2 and stage3 binaries are stripped by adding -s to
 # LDFLAGS. Otherwise they will contain paths to object files, which
@@ -97,9 +108,10 @@ check: all
 install: all
 	mkdir -p $(DESTDIR)$(BINDIR)
 	cp $(objdir)/cproc $(objdir)/cproc-qbe $(DESTDIR)$(BINDIR)
+	if test -n "$(RUNTIME)"; then cp $(RUNTIME) $(DESTDIR)$(BINDIR)/cproc-rt.a; fi
 	mkdir -p $(DESTDIR)$(MANDIR)/man1
 	cp cproc.1 $(DESTDIR)$(MANDIR)/man1
 
 .PHONY: clean
 clean:
-	rm -rf cproc $(DRIVER_OBJ) cproc-qbe $(OBJ) stage2 stage3
+	rm -rf cproc $(DRIVER_OBJ) cproc-qbe $(OBJ) $(RUNTIME_OBJ) $(RUNTIME_LIB) stage2 stage3

@@ -100,6 +100,8 @@ struct func {
 
 static const int ptrclass = 'l';
 
+static void emitname(struct value *);
+
 void
 switchcase(struct switchcases *cases, unsigned long long i, struct block *b)
 {
@@ -153,6 +155,36 @@ mkglobal(struct decl *d)
 	return v;
 }
 
+void
+emitweak(struct decl *d)
+{
+	fputs("weak ", stdout);
+	emitname(d->value);
+	putchar('\n');
+}
+
+void
+emitalias(struct decl *d, struct decl *target, char *targetname, bool weak)
+{
+	struct value fallback = {
+		.kind = VALUE_GLOBAL,
+		.u.name = targetname,
+	};
+
+	if (weak)
+		fputs("weak ", stdout);
+	if (d->linkage == LINKEXTERN)
+		fputs("export ", stdout);
+	fputs("alias ", stdout);
+	emitname(d->value);
+	fputs(" = ", stdout);
+	if (target && target->value)
+		emitname(target->value);
+	else
+		emitname(&fallback);
+	putchar('\n');
+}
+
 struct value *
 mkintconst(unsigned long long n)
 {
@@ -175,6 +207,26 @@ mkfltconst(int kind, double n)
 	v->u.f = n;
 
 	return v;
+}
+
+static bool
+isldouble(struct type *t)
+{
+	return t->kind == TYPELDOUBLE;
+}
+
+static void
+ldbits(long double n, unsigned long long *lo, unsigned *hi)
+{
+	unsigned char b[16] = {0};
+	size_t i, nbyte;
+
+	nbyte = sizeof(n) < 10 ? sizeof(n) : 10;
+	memcpy(b, &n, nbyte);
+	*lo = 0;
+	for (i = 0; i < 8; ++i)
+		*lo |= (unsigned long long)b[i] << i * 8;
+	*hi = (unsigned)b[8] | (unsigned)b[9] << 8;
 }
 
 static struct qbetype
@@ -200,9 +252,12 @@ qbetype(struct type *t)
 	case 2: return t->u.arith.issigned ? sh : uh;
 	case 4: return t->prop & PROPFLOAT ? s : w;
 	case 8: return t->prop & PROPFLOAT ? d : l;
-	case 16: fatal("long double is not yet supported");
+	case 16:
+		if (isldouble(t))
+			return l;
+		break;
 	}
-	assert(0);
+	fatal("internal error; unsupported scalar size");
 }
 
 /* functions */
@@ -217,6 +272,18 @@ functemp(struct func *f, struct value *v)
 	v->kind = VALUE_TEMP;
 	v->u.name = NULL;
 	v->id = ++f->lastid;
+}
+
+static struct value *
+mksym(const char *name)
+{
+	struct value *v;
+
+	v = xmalloc(sizeof(*v));
+	v->kind = VALUE_GLOBAL;
+	v->u.name = (char *)name;
+	v->id = 0;
+	return v;
 }
 
 static const char *const instname[] = {
@@ -277,6 +344,92 @@ funcbits(struct func *f, struct type *t, struct value *v, struct bitfield b)
 }
 
 static struct value *
+functmpalloc(struct func *f, unsigned long long size, int align)
+{
+	enum instkind op;
+	struct block *end;
+	struct value *v;
+
+	end = f->end;
+	f->end = f->start;
+	v = mkintconst(size);
+	switch (align) {
+	case 1:
+	case 2:
+	case 4:  op = IALLOC4; break;
+	case 8:  op = IALLOC8; break;
+	default: op = IALLOC16; break;
+	}
+	v = funcinst(f, op, ptrclass, v, NULL);
+	f->end = end;
+	return v;
+}
+
+static struct value *
+funccallv(struct func *f, const char *name, struct type *ret, struct type **argtypes, struct value **args, size_t nargs)
+{
+	struct value *v;
+	size_t i;
+
+	emittype(ret);
+	v = funcinst(f, ICALL, qbetype(ret).base, mksym(name), ret->value);
+	for (i = 0; i < nargs; ++i) {
+		emittype(argtypes[i]);
+		funcinst(f, IARG, qbetype(argtypes[i]).base, args[i], argtypes[i]->value);
+	}
+	return v;
+}
+
+static struct value *
+funcldcall(struct func *f, const char *name, struct type **argtypes, struct value **args, size_t nargs)
+{
+	struct type *types[4];
+	struct value *vals[4], *ret;
+	size_t i;
+
+	assert(nargs + 1 <= countof(types));
+	ret = functmpalloc(f, typeldouble.size, typeldouble.align);
+	types[0] = &typeulong;
+	vals[0] = ret;
+	for (i = 0; i < nargs; ++i) {
+		types[i + 1] = argtypes[i];
+		vals[i + 1] = args[i];
+	}
+	funccallv(f, name, &typevoid, types, vals, nargs + 1);
+	return ret;
+}
+
+static struct value *
+funcldconst(struct func *f, long double n)
+{
+	struct value *addr, *hiaddr;
+	unsigned long long lo;
+	unsigned hi;
+
+	ldbits(n, &lo, &hi);
+	addr = functmpalloc(f, typeldouble.size, typeldouble.align);
+	funcinst(f, ISTOREL, 0, mkintconst(lo), addr);
+	hiaddr = funcinst(f, IADD, ptrclass, addr, mkintconst(8));
+	funcinst(f, ISTOREL, 0, mkintconst(0), hiaddr);
+	funcinst(f, ISTOREH, 0, mkintconst(hi), hiaddr);
+	return addr;
+}
+
+static struct value *
+funcldvaarg(struct func *f, struct value *ap)
+{
+	struct value *slot, *cur, *next;
+
+	slot = funcinst(f, IADD, ptrclass, ap, mkintconst(8));
+	cur = funcinst(f, ILOADL, ptrclass, slot, NULL);
+	cur = funcinst(f, IADD, ptrclass, cur, mkintconst(15));
+	cur = funcinst(f, IAND, ptrclass, cur, mkintconst(-16));
+	next = funcinst(f, IADD, ptrclass, cur, mkintconst(16));
+	funcinst(f, ISTOREL, 0, next, slot);
+	return cur;
+}
+
+static struct value *
 convert(struct func *f, struct type *dst, struct type *src, struct value *l)
 {
 	enum instkind op;
@@ -293,6 +446,53 @@ convert(struct func *f, struct type *dst, struct type *src, struct value *l)
 		return NULL;
 	if (!(src->prop & PROPREAL) || !(dst->prop & PROPREAL))
 		fatal("internal error; unsupported conversion");
+	if (isldouble(src)) {
+		struct type *args[] = {&typeulong};
+		struct value *vals[] = {l};
+		if (dst->kind == TYPEBOOL)
+			return funccallv(f, "__cproc_ld80_bool", &typeint, args, vals, 1);
+		if (dst->prop & PROPINT) {
+			if (dst->size == 8) {
+				return funccallv(f, dst->u.arith.issigned ?
+					"__cproc_ld80_to_i64" : "__cproc_ld80_to_u64",
+					dst->u.arith.issigned ? &typelong : &typeulong, args, vals, 1);
+			}
+			return funccallv(f, dst->u.arith.issigned ?
+				"__cproc_ld80_to_i32" : "__cproc_ld80_to_u32",
+				dst->u.arith.issigned ? &typeint : &typeuint, args, vals, 1);
+		}
+		if (dst == &typefloat)
+			return funccallv(f, "__cproc_ld80_to_f32", &typefloat, args, vals, 1);
+		if (dst == &typedouble)
+			return funccallv(f, "__cproc_ld80_to_f64", &typedouble, args, vals, 1);
+		fatal("internal error; unknown long double conversion");
+	}
+	if (isldouble(dst)) {
+		struct type *args[] = {src};
+		struct value *vals[] = {l};
+		const char *name;
+		if (src->prop & PROPINT && src->size < 4) {
+			src = src->u.arith.issigned ? &typeint : &typeuint;
+			l = convert(f, src, args[0], l);
+			args[0] = src;
+			vals[0] = l;
+		}
+		if (src->prop & PROPINT) {
+			if (src->size == 8)
+				name = src->u.arith.issigned ?
+					"__cproc_i64_to_ld80" : "__cproc_u64_to_ld80";
+			else
+				name = src->u.arith.issigned ?
+					"__cproc_i32_to_ld80" : "__cproc_u32_to_ld80";
+		} else if (src == &typefloat) {
+			name = "__cproc_f32_to_ld80";
+		} else if (src == &typedouble) {
+			name = "__cproc_f64_to_ld80";
+		} else {
+			fatal("internal error; unknown long double conversion");
+		}
+		return funcldcall(f, name, args, vals, 1);
+	}
 	if (dst->kind == TYPEBOOL) {
 		class = 'w';
 		if (src->prop & PROPINT) {
@@ -451,8 +651,6 @@ funcstore(struct func *f, struct type *t, enum typequal tq, struct lvalue lval, 
 	struct qbetype qt;
 	int bits;
 
-	if (tq & QUALVOLATILE)
-		error(&tok.loc, "volatile store is not yet supported");
 	if (tq & QUALCONST)
 		error(&tok.loc, "cannot store to 'const' object");
 	tp = t->prop;
@@ -462,6 +660,9 @@ funcstore(struct func *f, struct type *t, enum typequal tq, struct lvalue lval, 
 	case TYPESTRUCT:
 	case TYPEUNION:
 	case TYPEARRAY:
+		funccopy(f, lval.addr, v, t->size, t->align);
+		break;
+	case TYPELDOUBLE:
 		funccopy(f, lval.addr, v, t->size, t->align);
 		break;
 	case TYPEPOINTER:
@@ -500,6 +701,10 @@ funcload(struct func *f, struct type *t, struct lvalue lval)
 	case TYPEUNION:
 	case TYPEARRAY:
 		return lval.addr;
+	case TYPELDOUBLE:
+		v = functmpalloc(f, t->size, t->align);
+		funccopy(f, v, lval.addr, t->size, t->align);
+		return v;
 	}
 	qt = qbetype(t);
 	v = funcinst(f, qt.load, qt.base, lval.addr, NULL);
@@ -778,6 +983,8 @@ funcexpr(struct func *f, struct expr *e)
 		if (t->prop & PROPINT || t->kind == TYPEPOINTER)
 			return mkintconst(e->u.constant.u);
 		assert(t->prop & PROPFLOAT);
+		if (isldouble(t))
+			return funcldconst(f, e->u.constant.f);
 		return mkfltconst(t->size == 4 ? VALUE_FLTCONST : VALUE_DBLCONST, e->u.constant.f);
 	case EXPRBITFIELD:
 	case EXPRCOMPOUND:
@@ -796,6 +1003,18 @@ funcexpr(struct func *f, struct expr *e)
 		} else if (t->prop & PROPINT) {
 			r = mkintconst(1);
 		} else if (t->prop & PROPFLOAT) {
+			if (isldouble(t)) {
+				struct type *args[] = {&typeulong, &typeulong};
+				struct value *vals[2];
+
+				r = funcldconst(f, 1.0L);
+				vals[0] = l;
+				vals[1] = r;
+				v = funcldcall(f, e->op == TINC ?
+					"__cproc_ld80_add" : "__cproc_ld80_sub", args, vals, 2);
+				v = funcstore(f, e->type, e->qual, lval, v);
+				return e->u.incdec.post ? l : v;
+			}
 			r = mkfltconst(t->size == 4 ? VALUE_FLTCONST : VALUE_DBLCONST, 1);
 		} else {
 			fatal("not a scalar");
@@ -836,6 +1055,11 @@ funcexpr(struct func *f, struct expr *e)
 			return funcload(f, e->type, (struct lvalue){r});
 		case TSUB:
 			r = funcexpr(f, e->base);
+			if (isldouble(e->type)) {
+				struct type *args[] = {&typeulong};
+				struct value *vals[] = {r};
+				return funcldcall(f, "__cproc_ld80_neg", args, vals, 1);
+			}
 			return funcinst(f, INEG, qbetype(e->type).base, r, NULL);
 		}
 		fatal("internal error; unknown unary expression");
@@ -871,6 +1095,29 @@ funcexpr(struct func *f, struct expr *e)
 		t = e->u.binary.l->type;
 		if (t->kind == TYPEPOINTER)
 			t = &typeulong;
+		if (isldouble(t)) {
+			struct type *args[] = {&typeulong, &typeulong};
+			struct value *vals[] = {l, r};
+			const char *name;
+
+			switch (e->op) {
+			case TMUL:     name = "__cproc_ld80_mul"; break;
+			case TDIV:     name = "__cproc_ld80_div"; break;
+			case TADD:     name = "__cproc_ld80_add"; break;
+			case TSUB:     name = "__cproc_ld80_sub"; break;
+			case TLESS:    name = "__cproc_ld80_lt";  goto CmpLDouble;
+			case TGREATER: name = "__cproc_ld80_gt";  goto CmpLDouble;
+			case TLEQ:     name = "__cproc_ld80_le";  goto CmpLDouble;
+			case TGEQ:     name = "__cproc_ld80_ge";  goto CmpLDouble;
+			case TEQL:     name = "__cproc_ld80_eq";  goto CmpLDouble;
+			case TNEQ:     name = "__cproc_ld80_ne";  goto CmpLDouble;
+			default:
+				fatal("internal error; unimplemented long double binary expression");
+			}
+			return funcldcall(f, name, args, vals, 2);
+		CmpLDouble:
+			return funccallv(f, name, &typeint, args, vals, 2);
+		}
 		switch (e->op) {
 		case TMUL:
 			op = IMUL;
@@ -992,10 +1239,33 @@ funcexpr(struct func *f, struct expr *e)
 		case BUILTINVAARG:
 			if (e->toeval)
 				funcexpr(f, e->toeval);
-			/* https://todo.sr.ht/~mcf/cproc/52 */
-			if (!(e->type->prop & PROPSCALAR))
-				error(&tok.loc, "va_arg with non-scalar type is not yet supported");
 			l = funcexpr(f, e->base);
+			/* https://todo.sr.ht/~mcf/cproc/52 */
+			if (!(e->type->prop & PROPSCALAR)) {
+				if ((e->type->kind == TYPESTRUCT || e->type->kind == TYPEUNION) && e->type->size <= 8) {
+					enum instkind store;
+					int class;
+
+					v = functmpalloc(f, e->type->size, e->type->align);
+					switch (e->type->size) {
+					case 1: store = ISTOREB; class = 'w'; break;
+					case 2: store = ISTOREH; class = 'w'; break;
+					case 3:
+					case 4: store = ISTOREW; class = 'w'; break;
+					case 5:
+					case 6:
+					case 7:
+					case 8: store = ISTOREL; class = 'l'; break;
+					default:
+						fatal("internal error; invalid aggregate size");
+					}
+					funcinst(f, store, 0, funcinst(f, IVAARG, class, l, NULL), v);
+					return v;
+				}
+				error(&tok.loc, "va_arg with non-scalar type is not yet supported");
+			}
+			if (isldouble(e->type))
+				return funcldvaarg(f, l);
 			return funcinst(f, IVAARG, qbetype(e->type).base, l, NULL);
 		case BUILTINALLOCA:
 			l = funcexpr(f, e->base);
@@ -1202,6 +1472,18 @@ emittype(struct type *t)
 	struct type *sub;
 	unsigned long long off;
 
+	if (isldouble(t)) {
+		if (t->value)
+			return;
+		t->value = xmalloc(sizeof(*t->value));
+		t->value->kind = VALUE_TYPE;
+		t->value->u.name = ".Lld";
+		t->value->id = 0;
+		fputs("type ", stdout);
+		emitname(t->value);
+		puts(" = align 16 { x }");
+		return;
+	}
 	if (t->value || t->kind != TYPESTRUCT && t->kind != TYPEUNION)
 		return;
 	t->value = xmalloc(sizeof(*t->value));
@@ -1403,6 +1685,8 @@ dataitem(struct expr *expr, unsigned long long size)
 {
 	struct decl *decl;
 	size_t i, w;
+	unsigned long long lo;
+	unsigned hi;
 	unsigned c;
 
 	switch (expr->kind) {
@@ -1425,9 +1709,18 @@ dataitem(struct expr *expr, unsigned long long size)
 		dataitem(expr->u.binary.r, 0);
 		break;
 	case EXPRCONST:
-		if (expr->type->prop & PROPFLOAT)
-			printf("%c_%.17g", expr->type->size == 4 ? 's' : 'd', expr->u.constant.f);
-		else
+		if (expr->type->prop & PROPFLOAT) {
+			if (isldouble(expr->type)) {
+				ldbits(expr->u.constant.f, &lo, &hi);
+				for (i = 0; i < 8; ++i)
+					printf("%u ", (unsigned)(lo >> i * 8) & 0xff);
+				printf("%u %u", hi & 0xff, hi >> 8);
+				if (size > 10)
+					printf(", z %llu", size - 10);
+			} else {
+				printf("%c_%.17g", expr->type->size == 4 ? 's' : 'd', (double)expr->u.constant.f);
+			}
+		} else
 			printf("%llu", expr->u.constant.u);
 		break;
 	case EXPRSTRING:
@@ -1522,7 +1815,10 @@ emitdata(struct decl *d, struct init *init)
 			t = cur->expr->type;
 			if (t->kind == TYPEARRAY)
 				t = t->base;
-			printf("%c ", qbetype(t).data);
+			if (isldouble(t))
+				fputs("b ", stdout);
+			else
+				printf("%c ", qbetype(t).data);
 			dataitem(cur->expr, cur->end - cur->start);
 			fputs(", ", stdout);
 		}

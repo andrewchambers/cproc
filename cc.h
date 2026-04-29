@@ -240,7 +240,7 @@ struct expr {
 		union {
 			unsigned long long u;
 			long long i;
-			double f;
+			long double f;
 		} constant;
 		struct stringlit string;
 		struct {
@@ -367,11 +367,14 @@ enum attrkind {
 	ATTRCONSTRUCTOR = 1<<3,
 	ATTRDESTRUCTOR  = 1<<4,
 	ATTRPACKED      = 1<<5,
+	ATTRWEAK        = 1<<6,
+	ATTRALIAS       = 1<<7,
 };
 
 struct attr {
 	enum attrkind kind;
 	int align;
+	char *alias;
 };
 
 bool attr(struct attr *, enum attrkind);
@@ -445,6 +448,8 @@ void switchcase(struct switchcases *, unsigned long long, struct block *);
 struct block *mkblock(char *);
 
 struct value *mkglobal(struct decl *);
+void emitweak(struct decl *);
+void emitalias(struct decl *, struct decl *, char *, bool);
 
 struct value *mkintconst(unsigned long long);
 
