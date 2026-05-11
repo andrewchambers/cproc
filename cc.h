@@ -95,10 +95,10 @@ struct type {
 	struct list link;  /* used only during construction of type */
 	/* qualifiers of the base type */
 	enum typequal qual;
-	bool incomplete;
+		bool incomplete;
 	union {
 		struct {
-			bool issigned, iscomplex;
+			bool issigned;
 			int width;
 		} arith;
 		struct {
@@ -132,6 +132,12 @@ enum linkage {
 	LINKEXTERN,
 };
 
+enum visibility {
+	VISDEFAULT,
+	VISHIDDEN,
+	VISPROTECTED,
+};
+
 enum storageduration {
 	SDSTATIC,
 	SDTHREAD,
@@ -162,8 +168,11 @@ struct decl {
 	enum typequal qual;
 	struct value *value;
 	char *asmname;
+	char *alias;
 	bool defined;
 	bool tentative;
+	bool weak;
+	enum visibility visibility;
 	struct decl *next;
 
 	union {
@@ -243,7 +252,7 @@ struct expr {
 		union {
 			unsigned long long u;
 			long long i;
-			double f;
+			long double f;
 		} constant;
 		struct stringlit string;
 		struct {
@@ -373,12 +382,17 @@ enum attrkind {
 	ATTRDESTRUCTOR  = 1<<4,
 	ATTRPACKED      = 1<<5,
 	ATTRSECTION     = 1<<6,
+	ATTRWEAK        = 1<<7,
+	ATTRALIAS       = 1<<8,
+	ATTRVISIBILITY  = 1<<9,
 };
 
 struct attr {
 	enum attrkind kind;
 	int align;
 	char *section;
+	char *alias;
+	enum visibility visibility;
 };
 
 bool attr(struct attr *, enum attrkind);
@@ -471,3 +485,4 @@ void funcinit(struct func *, struct decl *, struct init *, bool);
 
 void emitfunc(struct func *, bool);
 void emitdata(struct decl *, struct init *);
+void emitfinish(void);

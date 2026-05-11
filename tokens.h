@@ -147,5 +147,6 @@ TOKEN(ALIAS__SIGNED__,     "__signed__")    /* XXX: what needs this? */
 TOKEN(ALIAS__THREAD,       "__thread")
 TOKEN(ALIAS__TYPEOF,       "__typeof")
 TOKEN(ALIAS__TYPEOF__,     "__typeof__")
+TOKEN(ALIAS__VOLATILE,     "__volatile")
 TOKEN(ALIAS__VOLATILE__,   "__volatile__")  /* XXX: what needs this? */
 TOKEN(ALIAS__ASM,          "__asm")

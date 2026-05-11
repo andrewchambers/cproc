@@ -3,13 +3,13 @@
 PREFIX=/usr/local
 BINDIR=$(PREFIX)/bin
 MANDIR=$(PREFIX)/share/man
-BACKEND=qbe
+BACKEND=amd64
 
 objdir=.
 -include config.mk
 
 .PHONY: all
-all: $(objdir)/cproc $(objdir)/cproc-qbe
+all: $(objdir)/cproc $(objdir)/cproc-amd64
 
 DRIVER_SRC=\
 	driver.c\
@@ -47,7 +47,7 @@ HDR=\
 	tokens.h\
 	util.h
 
-$(objdir)/cproc-qbe: $(OBJ)
+$(objdir)/cproc-amd64: $(OBJ)
 	$(CC) $(LDFLAGS) -o $@ $(OBJ)
 
 $(objdir)/attr.o    : attr.c    $(HDR)          $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ attr.c
@@ -59,7 +59,7 @@ $(objdir)/init.o    : init.c    $(HDR)          $(stagedeps) ; $(CC) $(CFLAGS) -
 $(objdir)/main.o    : main.c    $(HDR) arg.h    $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ main.c
 $(objdir)/map.o     : map.c     util.h          $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ map.c
 $(objdir)/pp.o      : pp.c      $(HDR)          $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ pp.c
-$(objdir)/qbe.o     : qbe.c     $(HDR) ops.h    $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ qbe.c
+$(objdir)/amd64.o   : amd64.c   $(HDR)          $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ amd64.c
 $(objdir)/scan.o    : scan.c    $(HDR)          $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ scan.c
 $(objdir)/scope.o   : scope.c   $(HDR)          $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ scope.c
 $(objdir)/stmt.o    : stmt.c    $(HDR)          $(stagedeps) ; $(CC) $(CFLAGS) -c -o $@ stmt.c
@@ -77,33 +77,33 @@ $(objdir)/util.o    : util.c    util.h          $(stagedeps) ; $(CC) $(CFLAGS) -
 .PHONY: stage2
 stage2: all
 	@mkdir -p $@
-	$(MAKE) objdir=$@ stagedeps='cproc cproc-qbe' CC=$(objdir)/cproc LDFLAGS='$(LDFLAGS) -s'
+	$(MAKE) objdir=$@ stagedeps='cproc cproc-amd64' CC=$(objdir)/cproc LDFLAGS='$(LDFLAGS) -s'
 
 .PHONY: stage3
 stage3: stage2
 	@mkdir -p $@
-	$(MAKE) objdir=$@ stagedeps='stage2/cproc stage2/cproc-qbe' CC=$(objdir)/stage2/cproc LDFLAGS='$(LDFLAGS) -s'
+	$(MAKE) objdir=$@ stagedeps='stage2/cproc stage2/cproc-amd64' CC=$(objdir)/stage2/cproc LDFLAGS='$(LDFLAGS) -s'
 
 .PHONY: bootstrap
 bootstrap: stage2 stage3
 	cmp stage2/cproc stage3/cproc
-	cmp stage2/cproc-qbe stage3/cproc-qbe
+	cmp stage2/cproc-amd64 stage3/cproc-amd64
 
 .PHONY: check
 check: all
-	@CCQBE=./cproc-qbe ./runtests
+	@CCAMD64=./cproc-amd64 ./runtests
 
 .PHONY: check-stage2
 check-stage2: all
-	@CCQBE=stage2/cproc-qbe ./runtests
+	@CCAMD64=stage2/cproc-amd64 ./runtests
 
 .PHONY: install
 install: all
 	mkdir -p $(DESTDIR)$(BINDIR)
-	cp $(objdir)/cproc $(objdir)/cproc-qbe $(DESTDIR)$(BINDIR)
+	cp $(objdir)/cproc $(objdir)/cproc-amd64 $(DESTDIR)$(BINDIR)
 	mkdir -p $(DESTDIR)$(MANDIR)/man1
 	cp cproc.1 $(DESTDIR)$(MANDIR)/man1
 
 .PHONY: clean
 clean:
-	rm -rf cproc $(DRIVER_OBJ) cproc-qbe $(OBJ) stage2 stage3
+	rm -rf cproc $(DRIVER_OBJ) cproc-amd64 $(OBJ) stage2 stage3

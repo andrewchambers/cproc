@@ -18,7 +18,6 @@ for arg ; do
 	--host=*) host=${arg#*=} ;;
 	--target=*) target=${arg#*=} ;;
 	--with-cpp=*) DEFAULT_CPP=${arg#*=} ;;
-	--with-qbe=*) DEFAULT_QBE=${arg#*=} ;;
 	--with-as=*) DEFAULT_AS=${arg#*=} ;;
 	--with-ld=*) DEFAULT_LD=${arg#*=} ;;
 	--with-ldso=*) DEFAULT_LDSO=${arg#*=} ;;
@@ -64,7 +63,10 @@ case "$target" in
 	;;
 *-linux-*gnu*)
 	test "${DEFAULT_LDSO+set}" || case "$target" in
-	x86_64*)  DEFAULT_LDSO=/lib64/ld-linux-x86-64.so.2 ;;
+	x86_64*)
+		DEFAULT_LDSO=$($CC -print-file-name=ld-linux-x86-64.so.2 2>/dev/null)
+		test -f "$DEFAULT_LDSO" || DEFAULT_LDSO=/lib64/ld-linux-x86-64.so.2
+		;;
 	aarch64*) DEFAULT_LDSO=/lib/ld-linux-aarch64.so.1  ;;
 	riscv64*) DEFAULT_LDSO=/lib/ld-linux-riscv64-lp64d.so.1 ;;
 	*) fail "unsuported target '$target'"
@@ -172,8 +174,14 @@ case "$target" in
 	fail "unknown target '$target', please create config.h manually"
 esac
 
-DEFAULT_CPP=$(printf '"%s", ' ${DEFAULT_CPP:-${toolprefix}cpp})
-DEFAULT_QBE=$(printf '"%s", ' ${DEFAULT_QBE:-qbe})
+if [ -z "$DEFAULT_CPP" ] ; then
+	if [ "$host" = "$target" ] ; then
+		DEFAULT_CPP="$CC -E"
+	else
+		DEFAULT_CPP=${toolprefix}cpp
+	fi
+fi
+DEFAULT_CPP=$(printf '"%s", ' $DEFAULT_CPP)
 DEFAULT_AS=$(printf '"%s", ' ${DEFAULT_AS:-${toolprefix}as})
 DEFAULT_LD=$(printf '"%s", ' ${DEFAULT_LD:-${toolprefix}ld})
 
@@ -203,7 +211,6 @@ static const char *const preprocesscmd[] = {
 	/* ignore extension markers */
 	"-D", "__extension__=",
 $defines};
-static const char *const codegencmd[]    = {$DEFAULT_QBE};
 static const char *const assemblecmd[]   = {$DEFAULT_AS};
 static const char *const linkcmd[]       = {$DEFAULT_LD$linkflags};
 EOF

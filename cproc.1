@@ -10,7 +10,7 @@
 .Ar sources...
 .Sh DESCRIPTION
 .Nm
-is a C11 compiler using QBE as backend.
+is a C11 compiler with a direct AMD64 assembly backend.
 It supports ISO C11, some features from the upcoming C23, and some
 GNU C extensions.
 .Pp
@@ -68,11 +68,11 @@ extension with
 .Pa .o .
 Or, if
 .Fl E
-or
-.Fl emit-qbe
 is used, the output is written to standard output.
 .It Fl s
 Strip the symbol table from the generated executable.
+.It Fl S
+Compile sources to assembly rather than assembling them.
 .It Fl U Ar macro
 Undefine a pre-defined macro.
 .It Fl v
@@ -92,7 +92,6 @@ which can be one of
 .Dq c ,
 .Dq c-header ,
 .Dq cpp-output ,
-.Dq qbe ,
 .Dq assembler ,
 .Dq assembler-with-cpp .
 .It Fl Wa,args... , Fl Wl,args... , Fl Wp,args...

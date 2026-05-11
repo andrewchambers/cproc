@@ -30,6 +30,7 @@ parseattr(struct attr *a, enum attrkind allowed, enum attrprefix prefix)
 {
 	const char *name, *prefixname = "";
 	char namebuf[32], *section;
+	struct stringlit lit;
 	enum attrkind kind;
 	int paren;
 
@@ -82,6 +83,34 @@ parseattr(struct attr *a, enum attrkind allowed, enum attrprefix prefix)
 			if (a)
 				a->section = section;
 			expect(TRPAREN, "after section name");
+		} else if (strcmp(name, "weak") == 0) {
+			kind = ATTRWEAK;
+		} else if (strcmp(name, "alias") == 0) {
+			kind = ATTRALIAS;
+			expect(TLPAREN, "after 'alias'");
+			tokencheck(&tok, TSTRINGLIT, "for alias target");
+			stringconcat(&lit, true);
+			if (a)
+				a->alias = lit.data;
+			expect(TRPAREN, "after alias target");
+		} else if (strcmp(name, "visibility") == 0) {
+			kind = ATTRVISIBILITY;
+			expect(TLPAREN, "after 'visibility'");
+			tokencheck(&tok, TSTRINGLIT, "for visibility");
+			stringconcat(&lit, true);
+			if (strcmp(lit.data, "hidden") == 0) {
+				if (a)
+					a->visibility = VISHIDDEN;
+			} else if (strcmp(lit.data, "protected") == 0) {
+				if (a)
+					a->visibility = VISPROTECTED;
+			} else if (strcmp(lit.data, "default") == 0) {
+				if (a)
+					a->visibility = VISDEFAULT;
+			} else {
+				error(&tok.loc, "unsupported visibility '%s'", lit.data);
+			}
+			expect(TRPAREN, "after visibility");
 		}
 		break;
 	}

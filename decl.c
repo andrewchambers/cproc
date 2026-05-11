@@ -147,7 +147,28 @@ funcspec(enum funcspec *fs)
 }
 
 static void structdecl(struct scope *, struct structbuilder *);
-static struct qualtype declspecs(struct scope *, enum storageclass *, enum funcspec *, int *);
+static struct qualtype declspecs(struct scope *, enum storageclass *, enum funcspec *, int *, struct attr *);
+
+static void
+repackstruct(struct type *t)
+{
+	struct member *m;
+
+	t->size = 0;
+	t->align = 1;
+	for (m = t->u.structunion.members; m; m = m->next) {
+		if (m->bits.before || m->bits.after)
+			error(&tok.loc, "bit-field '%s' in packed struct is not supported", m->name);
+		if (t->kind == TYPESTRUCT) {
+			m->offset = t->size;
+			t->size += m->type->size;
+		} else {
+			m->offset = 0;
+			if (t->size < m->type->size)
+				t->size = m->type->size;
+		}
+	}
+}
 
 static struct type *
 tagspec(struct scope *s)
@@ -162,6 +183,7 @@ tagspec(struct scope *s)
 	enum typekind kind;
 	struct decl *d, *enumconsts;
 	struct expr *e;
+	struct qualtype qt;
 	struct attr a;
 	enum attrkind allowedattr;
 	struct structbuilder b;
@@ -187,10 +209,13 @@ tagspec(struct scope *s)
 		tag = tokenstr(tok.kind);
 		next();
 	}
-	if (kind == TYPEENUM && consume(TCOLON)) {
-		et = declspecs(s, NULL, NULL, NULL).type;
-		if (!et)
-			error(&tok.loc, "no type in enum type specifier");
+	if (kind == TYPEENUM) {
+		if (consume(TCOLON)) {
+			qt = declspecs(s, NULL, NULL, NULL, NULL);
+			et = qt.type;
+			if (!et)
+				error(&tok.loc, "no type in enum type specifier");
+		}
 	}
 	if (tag)
 		t = scopegettag(s, tag, tok.kind != TLBRACE && tok.kind != TSEMICOLON);
@@ -229,6 +254,11 @@ tagspec(struct scope *s)
 		if (!t->u.structunion.members)
 			error(&tok.loc, "struct/union has no members");
 		next();
+		gnuattr(&a, allowedattr);
+		if (a.kind & ATTRPACKED && !b.pack) {
+			b.pack = true;
+			repackstruct(t);
+		}
 		if (!b.pack)
 			t->size = ALIGNUP(t->size, t->align);
 		break;
@@ -320,7 +350,7 @@ tagspec(struct scope *s)
 
 /* 6.7 Declarations */
 static struct qualtype
-declspecs(struct scope *s, enum storageclass *sc, enum funcspec *fs, int *align)
+declspecs(struct scope *s, enum storageclass *sc, enum funcspec *fs, int *align, struct attr *a)
 {
 	struct type *t, *other;
 	struct decl *d;
@@ -456,7 +486,7 @@ declspecs(struct scope *s, enum storageclass *sc, enum funcspec *fs, int *align)
 			break;
 
 		case T__ATTRIBUTE__:
-			gnuattr(NULL, 0);
+			gnuattr(a, a ? ATTRWEAK|ATTRVISIBILITY : 0);
 			break;
 
 		default:
@@ -553,7 +583,7 @@ is used for the qualifiers of the base type). This is corrected in
 declarator().
 */
 static void
-declaratortypes(struct scope *s, struct list *result, char **name, struct scope **funcscope, bool allowabstract)
+declaratortypes(struct scope *s, struct list *result, char **name, struct scope **funcscope, bool allowabstract, struct attr *idattr)
 {
 	struct list *ptr;
 	struct type *t;
@@ -589,7 +619,7 @@ declaratortypes(struct scope *s, struct list *result, char **name, struct scope 
 				goto func;
 			}
 		}
-		declaratortypes(s, result, name, funcscope, allowabstract);
+		declaratortypes(s, result, name, funcscope, allowabstract, idattr);
 		expect(TRPAREN, "after parenthesized declarator");
 		allowattr = false;
 		break;
@@ -671,7 +701,10 @@ declaratortypes(struct scope *s, struct list *result, char **name, struct scope 
 			if (!allowattr)
 				error(&tok.loc, "attribute not allowed after parenthesized declarator");
 			/* attribute applies to identifier if ptr->prev == result, otherwise type ptr->prev */
-			gnuattr(NULL, 0);
+			gnuattr(ptr->prev == result ? idattr : NULL,
+				ptr->prev == result && idattr
+					? ATTRWEAK|ATTRALIAS|ATTRVISIBILITY|ATTRALIGNED
+					: 0);
 		attr:
 			break;
 		default:
@@ -681,7 +714,7 @@ declaratortypes(struct scope *s, struct list *result, char **name, struct scope 
 }
 
 static struct qualtype
-declarator(struct scope *s, struct qualtype base, char **name, struct scope **funcscope, bool allowabstract)
+declarator(struct scope *s, struct qualtype base, char **name, struct scope **funcscope, bool allowabstract, struct attr *idattr)
 {
 	struct type *t;
 	enum typequal tq;
@@ -690,7 +723,7 @@ declarator(struct scope *s, struct qualtype base, char **name, struct scope **fu
 
 	if (funcscope)
 		*funcscope = NULL;
-	declaratortypes(s, &result, name, funcscope, allowabstract);
+	declaratortypes(s, &result, name, funcscope, allowabstract, idattr);
 	for (l = result.prev; l != &result; l = prev) {
 		prev = l->prev;
 		t = listelement(l, struct type, link);
@@ -752,12 +785,12 @@ parameter(struct scope *s)
 	enum storageclass sc;
 
 	attr(NULL, 0);
-	t = declspecs(s, &sc, NULL, NULL);
+	t = declspecs(s, &sc, NULL, NULL, NULL);
 	if (!t.type)
 		error(&tok.loc, "no type in parameter declaration");
 	if (sc && sc != SCREGISTER)
 		error(&tok.loc, "parameter declaration has invalid storage-class specifier");
-	t = declarator(s, t, &name, NULL, true);
+	t = declarator(s, t, &name, NULL, true, NULL);
 	t.type = typeadjust(t.type, &t.qual);
 	d = mkdecl(name, DECLOBJECT, t.type, t.qual, LINKNONE);
 	d->u.obj.storage = SDAUTO;
@@ -884,14 +917,15 @@ static void
 structdecl(struct scope *s, struct structbuilder *b)
 {
 	struct qualtype base, mt;
+	struct attr ma;
 	char *name;
 	unsigned long long width;
-	int align;
+	int align, malign;
 
 	if (staticassert(s))
 		return;
 	attr(NULL, 0);
-	base = declspecs(s, NULL, NULL, &align);
+	base = declspecs(s, NULL, NULL, &align, NULL);
 	if (!base.type)
 		error(&tok.loc, "no type in struct member declaration");
 	if (tok.kind == TSEMICOLON) {
@@ -906,9 +940,13 @@ structdecl(struct scope *s, struct structbuilder *b)
 			width = intconstexpr(s, false);
 			addmember(b, base, NULL, 0, width);
 		} else {
-			mt = declarator(s, base, &name, NULL, false);
+			ma = (struct attr){0};
+			mt = declarator(s, base, &name, NULL, false, &ma);
+			malign = align;
+			if (ma.kind & ATTRALIGNED && malign < ma.align)
+				malign = ma.align;
 			width = consume(TCOLON) ? intconstexpr(s, false) : -1;
-			addmember(b, mt, name, align, width);
+			addmember(b, mt, name, malign, width);
 		}
 		if (tok.kind == TSEMICOLON)
 			break;
@@ -923,9 +961,9 @@ typename(struct scope *s, enum typequal *tq, struct expr **toeval)
 {
 	struct qualtype t;
 
-	t = declspecs(s, NULL, NULL, NULL);
+	t = declspecs(s, NULL, NULL, NULL, NULL);
 	if (t.type) {
-		t = declarator(s, t, NULL, NULL, true);
+		t = declarator(s, t, NULL, NULL, true, NULL);
 		if (tq)
 			*tq |= t.qual;
 		if (toeval)
@@ -944,6 +982,17 @@ getlinkage(enum declkind kind, enum storageclass sc, struct decl *prior, bool fi
 	return filescope ? LINKEXTERN : LINKNONE;
 }
 
+static bool
+declcompatible(enum declkind kind, struct type *t, struct type *prior)
+{
+	if (typecompatible(t, prior))
+		return true;
+	if (kind == DECLFUNC && t->kind == TYPEFUNC && prior->kind == TYPEFUNC &&
+	    !t->u.func.isvararg && !prior->u.func.isvararg && (!t->u.func.params || !prior->u.func.params))
+		return typecompatible(t->base, prior->base);
+	return false;
+}
+
 static struct decl *
 declcommon(struct scope *s, enum declkind kind, char *name, char *asmname, struct type *t, enum typequal tq, enum storageclass sc, struct decl *prior)
 {
@@ -957,7 +1006,7 @@ declcommon(struct scope *s, enum declkind kind, char *name, char *asmname, struc
 		linkage = getlinkage(kind, sc, prior, s == &filescope);
 		if (prior->linkage != linkage)
 			error(&tok.loc, "%s '%s' redeclared with different linkage", kindstr, name);
-		if (!typecompatible(t, prior->type) || tq != prior->qual)
+		if (!declcompatible(kind, t, prior->type) || tq != prior->qual)
 			error(&tok.loc, "%s '%s' redeclared with incompatible type", kindstr, name);
 		if (asmname && (!prior->asmname || strcmp(prior->asmname, asmname) != 0))
 			error(&tok.loc, "%s '%s' redeclared with different assembler name", kindstr, name);
@@ -976,7 +1025,7 @@ declcommon(struct scope *s, enum declkind kind, char *name, char *asmname, struc
 				error(&tok.loc, "'%s' redeclared with different kind", name);
 			if (prior->linkage != linkage)
 				error(&tok.loc, "%s '%s' redeclared with different linkage", kindstr, name);
-			if (!typecompatible(t, prior->type) || tq != prior->qual)
+			if (!declcompatible(kind, t, prior->type) || tq != prior->qual)
 				error(&tok.loc, "%s '%s' redeclared with incompatible type", kindstr, name);
 			if (!asmname)
 				asmname = prior->asmname;
@@ -989,6 +1038,20 @@ declcommon(struct scope *s, enum declkind kind, char *name, char *asmname, struc
 	d->asmname = asmname;
 	scopeputdecl(s, d);
 	return d;
+}
+
+static void
+declattr(struct decl *d, struct attr *a)
+{
+	if (a->kind & ATTRWEAK)
+		d->weak = true;
+	if (a->kind & ATTRVISIBILITY)
+		d->visibility = a->visibility;
+	if (a->kind & ATTRALIAS) {
+		if (d->alias && strcmp(d->alias, a->alias) != 0)
+			error(&tok.loc, "declaration of '%s' has conflicting aliases", d->name);
+		d->alias = a->alias;
+	}
 }
 
 static void
@@ -1014,6 +1077,8 @@ decl(struct scope *s, struct func *f)
 	enum storageclass sc;
 	enum funcspec fs;
 	struct attr a;
+	struct attr baseattr;
+	struct attr thisattr;
 	struct init *init;
 	bool hasinit;
 	char *name, *asmname;
@@ -1021,16 +1086,17 @@ decl(struct scope *s, struct func *f)
 	struct decl *d, *prior;
 	enum declkind kind;
 	struct scope *funcscope;
-	int align;
+	int align, thisalign;
 
 	if (staticassert(s))
 		return true;
-	a.kind = 0;
+	a = (struct attr){0};
 	if (attr(&a, ATTRNORETURN) && consume(TSEMICOLON))
 		return true;
-	base = declspecs(s, &sc, &fs, &align);
+	base = declspecs(s, &sc, &fs, &align, &a);
 	if (!base.type)
 		return false;
+	baseattr = a;
 	if (f) {
 		if (sc == SCTHREADLOCAL)
 			error(&tok.loc, "block scope declaration containing 'thread_local' must contain 'static' or 'extern'");
@@ -1046,7 +1112,11 @@ decl(struct scope *s, struct func *f)
 		return true;
 	}
 	for (;;) {
-		qt = declarator(s, base, &name, &funcscope, false);
+		thisattr = baseattr;
+		qt = declarator(s, base, &name, &funcscope, false, &thisattr);
+		thisalign = align;
+		if (thisattr.kind & ATTRALIGNED && thisalign < thisattr.align)
+			thisalign = thisattr.align;
 		t = qt.type;
 		tq = qt.qual;
 		if (consume(T__ASM__)) {
@@ -1061,7 +1131,7 @@ decl(struct scope *s, struct func *f)
 		} else {
 			asmname = NULL;
 		}
-		gnuattr(&a, 0);  /* appertains to identifier */
+		gnuattr(&thisattr, ATTRWEAK|ATTRALIAS|ATTRVISIBILITY);  /* appertains to identifier */
 		kind = sc & SCTYPEDEF ? DECLTYPE : t->kind == TYPEFUNC ? DECLFUNC : DECLOBJECT;
 		prior = scopegetdecl(s, name, false);
 		if (prior && prior->kind != kind)
@@ -1078,11 +1148,12 @@ decl(struct scope *s, struct func *f)
 				error(&tok.loc, "typedef '%s' redefined with different type", name);
 			break;
 		case DECLOBJECT:
-			if (align && align < t->align)
-				error(&tok.loc, "object '%s' requires alignment %d, which is stricter than specified alignment %d", name, t->align, align);
+			if (thisalign && thisalign < t->align)
+				error(&tok.loc, "object '%s' requires alignment %d, which is stricter than specified alignment %d", name, t->align, thisalign);
 			d = declcommon(s, kind, name, asmname, t, tq, sc, prior);
-			if (d->u.obj.align < align)
-				d->u.obj.align = align;
+			declattr(d, &thisattr);
+			if (d->u.obj.align < thisalign)
+				d->u.obj.align = thisalign;
 			if (d->linkage == LINKNONE && !(sc & SCSTATIC)) {
 				d->u.obj.storage = SDAUTO;
 			} else {
@@ -1121,9 +1192,10 @@ decl(struct scope *s, struct func *f)
 			if (f && sc && sc != SCEXTERN)  /* 6.7.1p7 */
 				error(&tok.loc, "function '%s' with block scope may only have storage class 'extern'", name);
 			d = declcommon(s, kind, name, asmname, t, tq, sc, prior);
+			declattr(d, &thisattr);
 			d->value = mkglobal(d);
 			d->u.func.inlinedefn = d->linkage == LINKEXTERN && fs & FUNCINLINE && !(sc & SCEXTERN) && (!prior || prior->u.func.inlinedefn);
-			d->u.func.isnoreturn = fs & FUNCNORETURN || a.kind & ATTRNORETURN;
+			d->u.func.isnoreturn = fs & FUNCNORETURN || thisattr.kind & ATTRNORETURN;
 			if (tok.kind == TLBRACE) {
 				if (!allowfunc)
 					error(&tok.loc, "function definition not allowed");

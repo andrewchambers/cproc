@@ -151,8 +151,11 @@ typecompatible(struct type *t1, struct type *t2)
 		type, but not with each other (unless they are the
 		same type)
 		*/
-		return t1->kind == TYPEENUM && t2 == t1->base ||
-		       t2->kind == TYPEENUM && t1 == t2->base;
+		if (t1->kind == TYPEENUM && t2 == t1->base)
+			return true;
+		if (t2->kind == TYPEENUM && t1 == t2->base)
+			return true;
+		return false;
 	}
 	switch (t1->kind) {
 	case TYPEBITINT:
@@ -170,6 +173,11 @@ typecompatible(struct type *t1, struct type *t2)
 	case TYPEFUNC:
 		if (t1->u.func.isvararg != t2->u.func.isvararg)
 			return false;
+		if (!t1->u.func.params || !t2->u.func.params) {
+			if (t1->u.func.params != t2->u.func.params)
+				return false;
+			goto derived;
+		}
 		for (p1 = t1->u.func.params, p2 = t2->u.func.params; p1 && p2; p1 = p1->next, p2 = p2->next) {
 			if (!typecompatible(p1->type, p2->type))
 				return false;
@@ -245,7 +253,7 @@ typecommonreal(struct type *t1, unsigned w1, struct type *t2, unsigned w2)
 	switch (t2->kind) {
 	case TYPEINT: return &typeuint;
 	case TYPELONG: return &typeulong;
-	case TYPELLONG: return &typellong;
+	case TYPELLONG: return &typeullong;
 	}
 	fatal("internal error; could not find common real type");
 	return NULL;

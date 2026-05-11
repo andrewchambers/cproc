@@ -24,13 +24,11 @@ enum filetype {
 	CHDR,   /* C header */
 	CPPOUT, /* preprocessed C source */
 	OBJ,    /* object file */
-	QBE,    /* QBE IL */
 };
 
 enum stage {
 	PREPROCESS,
 	COMPILE,
-	CODEGEN,
 	ASSEMBLE,
 	LINK,
 };
@@ -58,12 +56,17 @@ static struct {
 static struct stageinfo stages[] = {
 	[PREPROCESS] = {.name = "preprocess"},
 	[COMPILE]    = {.name = "compile"},
-	[CODEGEN]    = {.name = "codegen"},
 	[ASSEMBLE]   = {.name = "assemble"},
 	[LINK]       = {.name = "link"},
 };
+static char *tempdir;
+static size_t tempidx;
+static struct array tempobjs;
+static struct array libpaths;
 
 static const char *const ignoreflags[] = {
+	"fPIC",
+	"fpic",
 	"fno-builtin",
 	"pedantic",
 	"pedantic-errors",
@@ -100,8 +103,6 @@ detectfiletype(const char *name)
 			return CHDR;
 		if (strcmp(dot, "i") == 0)
 			return CPPOUT;
-		if (strcmp(dot, "qbe") == 0)
-			return QBE;
 		if (strcmp(dot, "s") == 0)
 			return ASM;
 		if (strcmp(dot, "S") == 0)
@@ -129,6 +130,77 @@ changeext(const char *name, const char *ext)
 	strcpy(result + baselen + 1, ext);
 
 	return result;
+}
+
+static void
+cleantemps(void)
+{
+	char **path;
+
+	if (tempobjs.len) {
+		arrayforeach (&tempobjs, path)
+			unlink(*path);
+	}
+	if (tempdir)
+		rmdir(tempdir);
+}
+
+static char *
+tempobj(void)
+{
+	const char *base;
+	char *path, **slot;
+	size_t idx, n;
+	int len;
+
+	/* Keep the private directory random, but make object basenames stable:
+	 * assemblers may copy them into unstripped ELF symbol tables. */
+	if (!tempdir) {
+		base = getenv("TMPDIR");
+		if (!base || !*base)
+			base = "/tmp";
+		n = strlen(base) + sizeof("/cproc-XXXXXX");
+		tempdir = xmalloc(n);
+		snprintf(tempdir, n, "%s/cproc-XXXXXX", base);
+		if (!mkdtemp(tempdir))
+			fatal("mkdtemp:");
+		atexit(cleantemps);
+	}
+
+	idx = tempidx++;
+	len = snprintf(NULL, 0, "%s/input%zu.o", tempdir, idx);
+	if (len < 0)
+		fatal("snprintf failed");
+	path = xmalloc((size_t)len + 1);
+	snprintf(path, (size_t)len + 1, "%s/input%zu.o", tempdir, idx);
+
+	slot = arrayadd(&tempobjs, sizeof(*slot));
+	*slot = path;
+	return path;
+}
+
+static void
+addlibpath(char *path)
+{
+	arrayaddptr(&libpaths, "-L");
+	arrayaddptr(&libpaths, path);
+}
+
+static void
+prependlibpaths(void)
+{
+	struct array cmd = {0};
+	struct stageinfo *s = &stages[LINK];
+	char **arg;
+
+	if (!libpaths.len)
+		return;
+
+	arg = s->cmd.val;
+	arrayaddptr(&cmd, *arg++);
+	arrayaddbuf(&cmd, libpaths.val, libpaths.len);
+	arrayaddbuf(&cmd, arg, s->cmd.len - sizeof(*arg));
+	s->cmd = cmd;
 }
 
 static int
@@ -233,22 +305,14 @@ buildobj(struct input *input, char *output)
 		return;
 	if (input->stages & 1<<LINK) {
 		input->stages &= ~(1<<LINK);
-		output = strdup("/tmp/cproc-XXXXXX");
-		if (!output)
-			fatal("strdup:");
-		fd = mkstemp(output);
-		if (fd < 0)
-			fatal("mkstemp:");
-		close(fd);
+		output = tempobj();
 	} else if (output) {
 		if (strcmp(output, "-") == 0)
 			output = NULL;
 	} else if (input->stages & 1<<ASSEMBLE) {
 		output = changeext(input->name, "o");
-	} else if (input->stages & 1<<CODEGEN) {
-		output = changeext(input->name, "s");
 	} else if (input->stages & 1<<COMPILE) {
-		output = changeext(input->name, "qbe");
+		output = changeext(input->name, "s");
 	}
 	if (strcmp(input->name, "-") == 0)
 		input->name = NULL;
@@ -358,7 +422,7 @@ compilecommand(char *arg)
 	} else if (n == sizeof(self) - 5) {
 		fatal("target of /proc/self/exe is too large");
 	}
-	strcpy(self + n, "-qbe");
+	strcpy(self + n, "-amd64");
 	cmd = strdup(self);
 	if (!cmd)
 		fatal("strdup:");
@@ -376,7 +440,7 @@ main(int argc, char *argv[])
 {
 	enum stage last = LINK;
 	enum filetype filetype = 0;
-	char *arg, *end, *output = NULL, *arch, *qbearch;
+	char *arg, *end, *output = NULL, *arch;
 	struct array inputs = {0}, *cmd;
 	struct input *input;
 	size_t i;
@@ -385,29 +449,16 @@ main(int argc, char *argv[])
 
 	arrayaddbuf(&stages[PREPROCESS].cmd, preprocesscmd, sizeof(preprocesscmd));
 	arrayaddptr(&stages[COMPILE].cmd, compilecommand(argv[0]));
-	arrayaddbuf(&stages[CODEGEN].cmd, codegencmd, sizeof(codegencmd));
 	arrayaddbuf(&stages[ASSEMBLE].cmd, assemblecmd, sizeof(assemblecmd));
 	arrayaddbuf(&stages[LINK].cmd, linkcmd, sizeof(linkcmd));
 
-	if (hasprefix(target, "x86_64-apple-")) {
+	if (hasprefix(target, "x86_64-") || hasprefix(target, "amd64-")) {
 		arch = "x86_64-sysv";
-		qbearch = "amd64_apple";
-	} else if (hasprefix(target, "x86_64-") || hasprefix(target, "amd64-")) {
-		arch = "x86_64-sysv";
-		qbearch = "amd64_sysv";
-	} else if (hasprefix(target, "aarch64-")) {
-		arch = "aarch64";
-		qbearch = "arm64";
-	} else if (hasprefix(target, "riscv64-")) {
-		arch = "riscv64";
-		qbearch = "rv64";
 	} else {
 		fatal("unsupported target '%s'", target);
 	}
 	arrayaddptr(&stages[COMPILE].cmd, "-t");
 	arrayaddptr(&stages[COMPILE].cmd, arch);
-	arrayaddptr(&stages[CODEGEN].cmd, "-t");
-	arrayaddptr(&stages[CODEGEN].cmd, qbearch);
 
 	for (;;) {
 ignore:
@@ -423,10 +474,9 @@ ignore:
 			switch (input->filetype) {
 			case ASM:    input->stages =                                     1<<ASSEMBLE|1<<LINK; break;
 			case ASMPP:  input->stages = 1<<PREPROCESS|                      1<<ASSEMBLE|1<<LINK; break;
-			case C:      input->stages = 1<<PREPROCESS|1<<COMPILE|1<<CODEGEN|1<<ASSEMBLE|1<<LINK; break;
+			case C:      input->stages = 1<<PREPROCESS|1<<COMPILE|             1<<ASSEMBLE|1<<LINK; break;
 			case CHDR:   input->stages = 1<<PREPROCESS                                          ; break;
-			case CPPOUT: input->stages =               1<<COMPILE|1<<CODEGEN|1<<ASSEMBLE|1<<LINK; break;
-			case QBE:    input->stages =                          1<<CODEGEN|1<<ASSEMBLE|1<<LINK; break;
+			case CPPOUT: input->stages =               1<<COMPILE|             1<<ASSEMBLE|1<<LINK; break;
 			case OBJ:    input->stages =                                                 1<<LINK; break;
 			default:     usage("reading from standard input requires -x");
 			}
@@ -446,18 +496,13 @@ ignore:
 			arrayaddptr(&stages[PREPROCESS].cmd, arg);
 		} else if (strcmp(arg, "-static") == 0) {
 			arrayaddptr(&stages[LINK].cmd, arg);
-		} else if (strcmp(arg, "-emit-qbe") == 0) {
-			if (last > COMPILE)
-				last = COMPILE;
 		} else if (strcmp(arg, "-include") == 0 || strcmp(arg, "-idirafter") == 0 || strcmp(arg, "-isystem") == 0 || strcmp(arg, "-iquote") == 0) {
 			if (!--argc)
 				usage(NULL);
 			arrayaddptr(&stages[PREPROCESS].cmd, arg);
 			arrayaddptr(&stages[PREPROCESS].cmd, *++argv);
 		} else if (strncmp(arg, "-std=", 5) == 0) {
-			/* pass through to the preprocessor, it may
-			 * affect its default definitions */
-			arrayaddptr(&stages[PREPROCESS].cmd, arg);
+			/* ignore: the configured preprocessor command sets the C mode */
 		} else if (strcmp(arg, "-pthread") == 0) {
 			arrayaddptr(&stages[LINK].cmd, "-l");
 			arrayaddptr(&stages[LINK].cmd, "pthread");
@@ -489,8 +534,7 @@ ignore:
 				arrayaddptr(&stages[PREPROCESS].cmd, nextarg(&argv));
 				break;
 			case 'L':
-				arrayaddptr(&stages[LINK].cmd, "-L");
-				arrayaddptr(&stages[LINK].cmd, nextarg(&argv));
+				addlibpath(nextarg(&argv));
 				break;
 			case 'l':
 				input = arrayadd(&inputs, sizeof(*input));
@@ -525,8 +569,8 @@ ignore:
 				arrayaddptr(&stages[PREPROCESS].cmd, "-P");
 				break;
 			case 'S':
-				if (last > CODEGEN)
-					last = CODEGEN;
+				if (last > COMPILE)
+					last = COMPILE;
 				break;
 			case 's':
 				arrayaddptr(&stages[LINK].cmd, "-s");
@@ -566,8 +610,6 @@ ignore:
 					filetype = CHDR;
 				else if (strcmp(arg, "cpp-output") == 0)
 					filetype = CPPOUT;
-				else if (strcmp(arg, "qbe") == 0)
-					filetype = QBE;
 				else if (strcmp(arg, "assembler") == 0)
 					filetype = ASM;
 				else if (strcmp(arg, "assembler-with-cpp") == 0)
@@ -581,6 +623,7 @@ ignore:
 		}
 	}
 
+	prependlibpaths();
 	for (i = 0; i < countof(stages); ++i)
 		stages[i].cmdbase = stages[i].cmd.len;
 	if (inputs.len == 0)

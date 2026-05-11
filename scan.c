@@ -142,22 +142,31 @@ isodigit(int c)
 static enum tokenkind
 number(struct scanner *s)
 {
-	bool allowsign = false;
+	bool allowsign = false, hex = false;
 
 	s->usebuf = true;
 	for (;;) {
 		nextchar(s);
 		switch (s->chr) {
+		case 'x':
+		case 'X':
+			if (s->buf.len == 1 && s->buf.str[0] == '0')
+				hex = true;
+			allowsign = false;
+			break;
 		case 'e':
 		case 'E':
+			allowsign = !hex;
+			break;
 		case 'p':
 		case 'P':
-			allowsign = true;
+			allowsign = hex;
 			break;
 		case '+':
 		case '-':
 			if (!allowsign)
 				goto done;
+			allowsign = false;
 			break;
 		case '.':
 			allowsign = false;

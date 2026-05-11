@@ -2,7 +2,7 @@
 
 [![builds.sr.ht status](https://builds.sr.ht/~mcf/cproc/commits/master.svg)](https://builds.sr.ht/~mcf/cproc/commits/master)
 
-cproc is a C compiler using [QBE] as a backend, released under the
+cproc is a C compiler with a direct AMD64 text assembly backend, released under the
 [ISC] license. It implements most of C11 as well as many [C23]
 features. Additionally, it implements a few [GNU C extensions].
 
@@ -46,24 +46,19 @@ any conforming C99 compiler.
 The POSIX driver depends on POSIX.1-2008 interfaces, and the `Makefile`
 requires a POSIX-compatible make(1).
 
-At runtime, you will need QBE, an assembler, and a linker for the
+At runtime, you will need an assembler and a linker for the
 target system. Since the preprocessor is not fully implemented, an
 external one is currently required as well.
 
 ## Supported targets
 
-All architectures supported by QBE should work (currently x86\_64,
-aarch64, and riscv64).
+The direct backend currently supports x86\_64 System V targets.
 
-The following targets are tested by the continuous build and known to
-bootstrap and pass all tests:
+The following targets are expected to bootstrap:
 
 - `x86_64-linux-musl`
 - `x86_64-linux-gnu`
 - `x86_64-freebsd`
-- `aarch64-linux-musl`
-- `aarch64-linux-gnu`
-- `riscv64-linux-gnu`
 
 ## Building
 
@@ -78,7 +73,6 @@ string arrays (`static char *[]`):
   command (including libc).
 - **`preprocesscmd`**: The preprocessor command, and any necessary flags
   for the target system.
-- **`codegencmd`**: The QBE command, and possibly explicit target flags.
 - **`assemblecmd`**: The assembler command.
 - **`linkcmd`**: The linker command.
 
@@ -103,8 +97,7 @@ specified in `config.h`.
 ## What's missing
 
 - Digraph sequences ([6.4.6p3], will not be implemented).
-- `volatile`-qualified types ([#7], requires qbe support).
-- `long double` type ([#3], requires qbe support).
+- `volatile`-qualified types.
 - The preprocessor is not fully implemented ([#6]).
 - Generation of position independent code (i.e. shared libraries,
   modules, PIEs).
@@ -126,7 +119,7 @@ following are not yet implemented:
 
 ### GNU C extensions
 
-- Inline assembly ([#5], requires qbe support).
+- Inline assembly ([#5]).
 - Statement expressions ([#20], unlikely to be implemented without
   specification and WG14 acceptance).
 
@@ -148,7 +141,6 @@ Please report any issues to [~mcf/cproc@todo.sr.ht].
 Patches are greatly appreciated. Send them to the mailing list
 (preferred), or as pull-requests on the [Codeberg mirror].
 
-[QBE]: https://c9x.me/compile/
 [ISC]: https://git.sr.ht/~mcf/cproc/blob/master/LICENSE
 [C23]: https://man.sr.ht/~mcf/cproc/doc/c23.md
 [GNU C extensions]: https://man.sr.ht/~mcf/cproc/doc/extensions.md

@@ -190,6 +190,17 @@ nullpointer(struct expr *e)
 	return e->u.constant.u == 0;
 }
 
+static bool
+ptrbasecompatible(struct type *want, struct type *have)
+{
+	if (typecompatible(want, have))
+		return true;
+	if (want->kind == TYPEFUNC && have->kind == TYPEFUNC && !want->u.func.isvararg && !have->u.func.isvararg &&
+	    (!want->u.func.params || !have->u.func.params))
+		return typecompatible(want->base, have->base);
+	return false;
+}
+
 struct expr *
 exprassign(struct expr *e, struct type *t)
 {
@@ -206,7 +217,7 @@ exprassign(struct expr *e, struct type *t)
 			break;
 		if (et->kind != TYPEPOINTER)
 			error(&tok.loc, "assignment to pointer must be from pointer or null pointer constant");
-		if (t->base != &typevoid && et->base != &typevoid && !typecompatible(t->base, et->base))
+		if (t->base != &typevoid && et->base != &typevoid && !ptrbasecompatible(t->base, et->base))
 			error(&tok.loc, "base types of pointer assignment must be compatible or void");
 		if ((et->qual & t->qual) != et->qual)
 			error(&tok.loc, "assignment to pointer discards qualifiers");
@@ -756,7 +767,7 @@ primaryexpr(struct scope *s)
 		}
 		if (strpbrk(tok.lit, base == 16 ? ".pP" : ".eE")) {
 			/* floating constant */
-			e->u.constant.f = strtod(tok.lit, &end);
+			e->u.constant.f = strtold(tok.lit, &end);
 			if (end == tok.lit)
 				error(&tok.loc, "invalid floating constant '%s'", tok.lit);
 			if (!end[0])
@@ -881,7 +892,7 @@ builtinfunc(struct scope *s, enum builtinkind kind)
 	case BUILTININFF:
 		e = mkexpr(EXPRCONST, &typefloat, NULL);
 		/* TODO: use INFINITY here when we can handle musl's math.h */
-		e->u.constant.f = strtod("inf", NULL);
+		e->u.constant.f = strtold("inf", NULL);
 		break;
 	case BUILTINNANF:
 		e = assignexpr(s);
@@ -889,7 +900,7 @@ builtinfunc(struct scope *s, enum builtinkind kind)
 			error(&tok.loc, "__builtin_nanf currently only supports empty string literals");
 		e = mkexpr(EXPRCONST, &typefloat, NULL);
 		/* TODO: use NAN here when we can handle musl's math.h */
-		e->u.constant.f = strtod("nan", NULL);
+		e->u.constant.f = strtold("nan", NULL);
 		break;
 	case BUILTINOFFSETOF:
 		t = typename(s, NULL, NULL);
@@ -1324,6 +1335,8 @@ condexpr(struct scope *s)
 				t = &typevoid;
 			} else if (typecompatible(lt, rt)) {
 				t = typecomposite(lt, rt);
+			} else if (ptrbasecompatible(lt, rt)) {
+				t = lt->kind == TYPEFUNC && !lt->u.func.params ? rt : lt;
 			} else {
 				error(&tok.loc, "operands of conditional operator must have compatible types");
 			}

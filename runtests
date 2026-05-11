@@ -1,6 +1,6 @@
 #!/bin/sh
 
-: ${CCQBE:=./cproc-qbe}
+: ${CCAMD64:=./cproc-amd64}
 
 if [ $# = 0 ] ; then
 	set -- test/*.c test/constraint/*.c
@@ -12,7 +12,7 @@ numfail=0
 fail=
 got=$(mktemp)
 tmp=$(mktemp)
-trap 'rm "$got"' EXIT
+trap 'rm -f "$got" "$tmp"' EXIT
 
 checkfail() {
 	got=$1
@@ -27,17 +27,21 @@ for test ; do
 	*+*) arch=${name##*+} ;;
 	*) arch=x86_64-sysv ;;
 	esac
-	if [ -f "$name.qbe" ] ; then
-		want=$name.qbe
-		set -- $CCQBE -t $arch -o "$got" "$test"
+	if [ "$arch" != x86_64-sysv ] ; then
+		echo "[SKIP] $test" >&2
+		continue
+	fi
+	if [ -f "$name.amd64.s" ] ; then
+		want=$name.amd64.s
+		set -- $CCAMD64 -t $arch -o "$got" "$test"
 	elif [ -f "$name.pp" ] ; then
 		want=$name.pp
-		set -- $CCQBE -t $arch -E -o "$got" "$test"
+		set -- $CCAMD64 -t $arch -E -o "$got" "$test"
 	elif [ -f "$name.err" ] ; then
 		want=$name.err
-		set -- checkfail "$got" $CCQBE -t $arch -o /dev/null "$test"
+		set -- checkfail "$got" $CCAMD64 -t $arch -o /dev/null "$test"
 	else
-		echo "invalid test '$test'" >&2
+		echo "[SKIP] $test" >&2
 		continue
 	fi
 	numtest=$((numtest + 1))

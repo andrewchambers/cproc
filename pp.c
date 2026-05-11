@@ -569,6 +569,7 @@ next(void)
 	case ALIAS__THREAD:       tok.kind = TTHREAD_LOCAL;  break;
 	case ALIAS__TYPEOF:
 	case ALIAS__TYPEOF__:     tok.kind = TTYPEOF;        break;
+	case ALIAS__VOLATILE:
 	case ALIAS__VOLATILE__:   tok.kind = TVOLATILE;      break;
 	case ALIAS__ASM:          tok.kind = T__ASM__;       break;
 	}

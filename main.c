@@ -18,7 +18,7 @@ main(int argc, char *argv[])
 	bool pponly = false;
 	char *output = NULL, *target = NULL;
 
-	argv0 = progname(argv[0], "cproc-qbe");
+	argv0 = progname(argv[0], "cproc-amd64");
 	ARGBEGIN {
 	case 'E':
 		pponly = true;
@@ -64,6 +64,7 @@ main(int argc, char *argv[])
 			}
 		}
 		emittentativedefns();
+		emitfinish();
 	}
 
 	fflush(stdout);
